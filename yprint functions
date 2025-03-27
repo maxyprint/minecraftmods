@@ -623,49 +623,11 @@ function yprint_checkout_communication_shortcode() {
         
         // Je nach Zahlungsart verschiedene Validierungen durchführen
         if (paymentMethod.includes('paypal')) {
-            // PayPal Validierung
-            $.ajax({
-                type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
-                data: {
-                    action: 'yprint_validate_payment',
-                    payment_method: paymentMethod,
-                    checkout_data: checkoutData,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
-                },
-                success: function(response) {
-                    if (response.success && response.data.validated) {
-                        callback(true);
-                    } else {
-                        callback(false);
-                    }
-                },
-                error: function() {
-                    callback(false);
-                }
-            });
+            // PayPal Validierung mit API
+            this.validatePayPalPayment(checkoutData, callback);
         } else if (paymentMethod.includes('stripe') || paymentMethod.includes('apple_pay') || paymentMethod.includes('google_pay') || paymentMethod.includes('credit')) {
-            // Kreditkarten/Stripe/Apple Pay/Google Pay Validierung
-            $.ajax({
-                type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
-                data: {
-                    action: 'yprint_validate_payment',
-                    payment_method: paymentMethod,
-                    checkout_data: checkoutData,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
-                },
-                success: function(response) {
-                    if (response.success && response.data.validated) {
-                        callback(true);
-                    } else {
-                        callback(false);
-                    }
-                },
-                error: function() {
-                    callback(false);
-                }
-            });
+            // Stripe Validierung mit API
+            this.validateStripePayment(checkoutData, callback);
         } else if (paymentMethod.includes('sepa') || paymentMethod.includes('lastschrift')) {
             // SEPA/Lastschrift Validierung
             $.ajax({
@@ -714,6 +676,251 @@ function yprint_checkout_communication_shortcode() {
                 }
             });
         }
+    },
+    
+    // PayPal Zahlungsvalidierung
+    validatePayPalPayment: function(checkoutData, callback) {
+        const $ = jQuery;
+        
+        // Schritt 1: Bestellung vorbereiten und PayPal-Session initialisieren
+        $.ajax({
+            type: 'POST',
+            url: '<?php echo admin_url('admin-ajax.php'); ?>',
+            data: {
+                action: 'yprint_init_paypal_payment',
+                checkout_data: checkoutData,
+                security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+            },
+            success: function(response) {
+                if (response.success && response.data.paypal_order_id) {
+                    // PayPal-Zahlung initiiert, jetzt PayPal-Modal öffnen
+                    const paypalOrderId = response.data.paypal_order_id;
+                    const tempOrderId = response.data.temp_order_id;
+                    
+                    // PayPal Modal öffnen mit zugewiesener Order ID
+                    paypal.Buttons({
+                        fundingSource: paypal.FUNDING.PAYPAL,
+                        createOrder: function() {
+                            return paypalOrderId; // Wir geben die bereits erstellte Order ID zurück
+                        },
+                        onApprove: function(data, actions) {
+                            // Zahlung wurde von Benutzer genehmigt, abschließen
+                            $('.yprint-validation-feedback')
+                                .empty()
+                                .addClass('success')
+                                .append($('<div class="yprint-validation-item"></div>')
+                                .text('PayPal-Zahlung wird verarbeitet...'))
+                                .show();
+                                
+                            // Zahlung bestätigen
+                            $.ajax({
+                                type: 'POST',
+                                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                                data: {
+                                    action: 'yprint_capture_paypal_payment',
+                                    paypal_order_id: paypalOrderId,
+                                    temp_order_id: tempOrderId,
+                                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                                },
+                                success: function(captureResponse) {
+                                    if (captureResponse.success) {
+                                        callback(true);
+                                    } else {
+                                        $('.yprint-validation-feedback')
+                                            .empty()
+                                            .addClass('error')
+                                            .append($('<div class="yprint-validation-item"></div>')
+                                            .text(captureResponse.data.message || 'Fehler bei der PayPal-Zahlung'))
+                                            .show();
+                                        callback(false);
+                                    }
+                                },
+                                error: function() {
+                                    $('.yprint-validation-feedback')
+                                        .empty()
+                                        .addClass('error')
+                                        .append($('<div class="yprint-validation-item"></div>')
+                                        .text('Fehler bei der PayPal-Zahlungsverarbeitung'))
+                                        .show();
+                                    callback(false);
+                                }
+                            });
+                        },
+                        onCancel: function() {
+                            $('.yprint-validation-feedback')
+                                .empty()
+                                .addClass('error')
+                                .append($('<div class="yprint-validation-item"></div>')
+                                .text('PayPal-Zahlung wurde abgebrochen'))
+                                .show();
+                            callback(false);
+                        },
+                        onError: function(err) {
+                            $('.yprint-validation-feedback')
+                                .empty()
+                                .addClass('error')
+                                .append($('<div class="yprint-validation-item"></div>')
+                                .text('Fehler bei der PayPal-Zahlung: ' + err))
+                                .show();
+                            callback(false);
+                        }
+                    }).render('#paypal-button-container');
+                    
+                    // PayPal-Modal anzeigen
+                    $('#yprint-paypal-modal').show();
+                } else {
+                    $('.yprint-validation-feedback')
+                        .empty()
+                        .addClass('error')
+                        .append($('<div class="yprint-validation-item"></div>')
+                        .text(response.data.message || 'Fehler bei der Initialisierung der PayPal-Zahlung'))
+                        .show();
+                    callback(false);
+                }
+            },
+            error: function() {
+                $('.yprint-validation-feedback')
+                    .empty()
+                    .addClass('error')
+                    .append($('<div class="yprint-validation-item"></div>')
+                    .text('Fehler bei der Verbindung mit dem Zahlungsserver'))
+                    .show();
+                callback(false);
+            }
+        });
+    },
+    
+    // Stripe Zahlungsvalidierung
+    validateStripePayment: function(checkoutData, callback) {
+        const $ = jQuery;
+        
+        // Schritt 1: Bestellung vorbereiten und Stripe-Session initialisieren
+        $.ajax({
+            type: 'POST',
+            url: '<?php echo admin_url('admin-ajax.php'); ?>',
+            data: {
+                action: 'yprint_init_stripe_payment',
+                checkout_data: checkoutData,
+                security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+            },
+            success: function(response) {
+                if (response.success && response.data.client_secret) {
+                    // Stripe Session initialisiert
+                    const clientSecret = response.data.client_secret;
+                    const tempOrderId = response.data.temp_order_id;
+                    
+                    // Stripe Elements anzeigen
+                    $('#yprint-stripe-modal').show();
+                    
+                    // Stripe Elements initialisieren, falls noch nicht geschehen
+                    if (!window.stripeElements) {
+                        const stripe = Stripe('<?php echo get_option('yprint_stripe_public_key', 'pk_live_51QomI4Efl8wKMoZvo59c44NsSuDkXqUtgvqg5qpTU5D7JmJf5XGfM8wNli25KpAAhrbPf2O0gjXNg3hWCtxpyG9G00Dxkv5oxL'); ?>');
+                        const elements = stripe.elements({
+                            clientSecret: clientSecret,
+                            appearance: {
+                                theme: 'stripe',
+                                variables: {
+                                    colorPrimary: '#0079FF',
+                                    colorBackground: '#ffffff',
+                                    colorText: '#1d1d1f',
+                                    colorDanger: '#dc3545',
+                                    fontFamily: 'Roboto, sans-serif',
+                                    borderRadius: '4px'
+                                }
+                            }
+                        });
+                        
+                        // Payment Element erstellen und mounten
+                        const paymentElement = elements.create('payment');
+                        paymentElement.mount('#yprint-stripe-payment-element');
+                        
+                        // Stripe-Formular abschicken
+                        document.getElementById('yprint-stripe-payment-form').addEventListener('submit', function(event) {
+                            event.preventDefault();
+                            
+                            // Bestätigen-Button deaktivieren und Ladeanimation anzeigen
+                            $('#yprint-stripe-submit').prop('disabled', true).addClass('loading');
+                            
+                            stripe.confirmPayment({
+                                elements,
+                                confirmParams: {
+                                    return_url: '<?php echo home_url('/stripe-return'); ?>',
+                                },
+                                redirect: 'if_required'
+                            }).then(function(result) {
+                                if (result.error) {
+                                    // Fehler anzeigen
+                                    $('.yprint-stripe-error-message').text(result.error.message).show();
+                                    $('#yprint-stripe-submit').prop('disabled', false).removeClass('loading');
+                                    callback(false);
+                                } else {
+                                    // Zahlung erfolgreich, Bestellung bestätigen
+                                    $.ajax({
+                                        type: 'POST',
+                                        url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                                        data: {
+                                            action: 'yprint_confirm_stripe_payment',
+                                            payment_intent: result.paymentIntent.id,
+                                            temp_order_id: tempOrderId,
+                                            security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                                        },
+                                        success: function(confirmResponse) {
+                                            if (confirmResponse.success) {
+                                                callback(true);
+                                                $('#yprint-stripe-modal').hide();
+                                            } else {
+                                                $('.yprint-stripe-error-message').text(confirmResponse.data.message || 'Fehler bei der Zahlungsbestätigung').show();
+                                                $('#yprint-stripe-submit').prop('disabled', false).removeClass('loading');
+                                                callback(false);
+                                            }
+                                        },
+                                        error: function() {
+                                            $('.yprint-stripe-error-message').text('Verbindungsfehler bei der Zahlungsbestätigung').show();
+                                            $('#yprint-stripe-submit').prop('disabled', false).removeClass('loading');
+                                            callback(false);
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                        
+                        // Schließen-Button
+                        $('#yprint-stripe-modal-close').on('click', function() {
+                            $('#yprint-stripe-modal').hide();
+                            callback(false);
+                        });
+                        
+                        // Speichern für späteren Zugriff
+                        window.stripeElements = {
+                            stripe: stripe,
+                            elements: elements
+                        };
+                    } else {
+                        // Elements bereits initialisiert, aktualisieren
+                        window.stripeElements.elements.update({
+                            clientSecret: clientSecret
+                        });
+                    }
+                } else {
+                    $('.yprint-validation-feedback')
+                        .empty()
+                        .addClass('error')
+                        .append($('<div class="yprint-validation-item"></div>')
+                        .text(response.data.message || 'Fehler bei der Initialisierung der Stripe-Zahlung'))
+                        .show();
+                    callback(false);
+                }
+            },
+            error: function() {
+                $('.yprint-validation-feedback')
+                    .empty()
+                    .addClass('error')
+                    .append($('<div class="yprint-validation-item"></div>')
+                    .text('Fehler bei der Verbindung mit dem Zahlungsserver'))
+                    .show();
+                callback(false);
+            }
+        });
     }
     };
 
@@ -725,6 +932,174 @@ function yprint_checkout_communication_shortcode() {
     
     <!-- Validierungsfeedback Element -->
     <div class="yprint-validation-feedback" style="display: none;"></div>
+    
+    <!-- PayPal Modal -->
+    <div id="yprint-paypal-modal" class="yprint-payment-modal" style="display: none;">
+        <div class="yprint-modal-content">
+            <div class="yprint-modal-header">
+                <h3>PayPal Zahlung</h3>
+                <span class="yprint-modal-close" id="yprint-paypal-modal-close">&times;</span>
+            </div>
+            <div class="yprint-modal-body">
+                <p>Bitte schließen Sie Ihre Zahlung mit PayPal ab:</p>
+                <div id="paypal-button-container"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Stripe Modal -->
+    <div id="yprint-stripe-modal" class="yprint-payment-modal" style="display: none;">
+        <div class="yprint-modal-content">
+            <div class="yprint-modal-header">
+                <h3>Kreditkartenzahlung</h3>
+                <span class="yprint-modal-close" id="yprint-stripe-modal-close">&times;</span>
+            </div>
+            <div class="yprint-modal-body">
+                <form id="yprint-stripe-payment-form">
+                    <div id="yprint-stripe-payment-element"></div>
+                    <div class="yprint-stripe-error-message" style="display: none;"></div>
+                    <button id="yprint-stripe-submit" type="submit">
+                        <span class="yprint-button-text">Zahlung bestätigen</span>
+                        <div class="yprint-button-loader" style="display: none;">
+                            <div class="yprint-loader-spinner"></div>
+                        </div>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+    
+    <style>
+    .yprint-payment-modal {
+        display: none;
+        position: fixed;
+        z-index: 1000;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.5);
+        overflow: auto;
+    }
+    
+    .yprint-modal-content {
+        background-color: #fff;
+        margin: 10% auto;
+        padding: 0;
+        border-radius: 8px;
+        box-shadow: 0 4px 16px rgba(0,0,0,0.2);
+        width: 90%;
+        max-width: 500px;
+        position: relative;
+    }
+    
+    .yprint-modal-header {
+        padding: 20px;
+        border-bottom: 1px solid #e0e0e0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+    
+    .yprint-modal-header h3 {
+        margin: 0;
+        font-size: 20px;
+        color: #1d1d1f;
+    }
+    
+    .yprint-modal-close {
+        color: #aaa;
+        font-size: 24px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+    
+    .yprint-modal-close:hover {
+        color: #555;
+    }
+    
+    .yprint-modal-body {
+        padding: 20px;
+    }
+    
+    #yprint-stripe-payment-form {
+        width: 100%;
+    }
+    
+    #yprint-stripe-payment-element {
+        margin-bottom: 20px;
+    }
+    
+    .yprint-stripe-error-message {
+        color: #dc3545;
+        margin-bottom: 15px;
+        padding: 8px 12px;
+        background-color: #f8d7da;
+        border-radius: 4px;
+    }
+    
+    #yprint-stripe-submit {
+        width: 100%;
+        padding: 12px;
+        background-color: #0079FF;
+        color: white;
+        border: none;
+        border-radius: 5px;
+        font-size: 16px;
+        font-weight: 600;
+        cursor: pointer;
+        position: relative;
+    }
+    
+    #yprint-stripe-submit:hover {
+        background-color: #0068e1;
+    }
+    
+    #yprint-stripe-submit:disabled {
+        background-color: #a0a0a0;
+        cursor: not-allowed;
+    }
+    
+    #yprint-stripe-submit.loading .yprint-button-text {
+        visibility: hidden;
+    }
+    
+    #yprint-stripe-submit.loading .yprint-button-loader {
+        display: block;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+    }
+    
+    #paypal-button-container {
+        width: 100%;
+        min-height: 60px;
+        margin-top: 20px;
+    }
+    </style>
+    
+    <!-- PayPal SDK einbinden -->
+    <script src="https://www.paypal.com/sdk/js?client-id=<?php echo get_option('yprint_paypal_client_id', 'AWKnm3nbPgIo3KXZbs-vjQPjSWOYy6LiFGQ6zn_nJ7XlW9LldJ8OjKuxbbLzK7UTE2xETV9sz43qzhpB'); ?>&currency=EUR&intent=capture"></script>
+    
+    <!-- Stripe JS einbinden -->
+    <script src="https://js.stripe.com/v3/"></script>
+    
+    <script>
+    jQuery(document).ready(function($) {
+        // PayPal Modal schließen
+        $('#yprint-paypal-modal-close').on('click', function() {
+            $('#yprint-paypal-modal').hide();
+        });
+        
+        // Schließen bei Klick außerhalb des Modals
+        $(window).on('click', function(event) {
+            if ($(event.target).hasClass('yprint-payment-modal')) {
+                $('.yprint-payment-modal').hide();
+            }
+        });
+    });
+    </script>
     <?php
     
     return ob_get_clean();
@@ -973,7 +1348,7 @@ add_action('wp_ajax_yprint_process_checkout', 'yprint_process_checkout');
 add_action('wp_ajax_nopriv_yprint_process_checkout', 'yprint_process_checkout');
 
 /**
- * AJAX-Handler für Zahlungsvalidierung
+ * AJAX-Handler für Zahlungsvalidierung (allgemein)
  */
 function yprint_validate_payment() {
     check_ajax_referer('yprint-checkout-nonce', 'security');
@@ -988,25 +1363,13 @@ function yprint_validate_payment() {
     $payment_method = sanitize_text_field($_POST['payment_method']);
     $checkout_data = isset($_POST['checkout_data']) ? $_POST['checkout_data'] : array();
     
-    // Zahlungsabwicklung je nach Zahlungsmethode
-    if (strpos($payment_method, 'paypal') !== false) {
-        // PayPal API Validierung
-        // Hier würden Sie die eigentliche PayPal-Integration verwenden
-        $validated = true; // Für Testzwecke immer erfolgreich
-    } elseif (strpos($payment_method, 'stripe') !== false || 
-              strpos($payment_method, 'apple_pay') !== false || 
-              strpos($payment_method, 'google_pay') !== false || 
-              strpos($payment_method, 'credit') !== false) {
-        // Stripe/Kreditkarten Validierung
-        // Hier würden Sie die eigentliche Stripe-Integration verwenden
-        $validated = true; // Für Testzwecke immer erfolgreich
-    } elseif (strpos($payment_method, 'sepa') !== false || 
-              strpos($payment_method, 'lastschrift') !== false) {
-        // SEPA/Lastschrift Validierung
-        $validated = true; // Für Testzwecke immer erfolgreich
+    // Zahlungsabwicklung je nach Zahlungsmethode (für Methoden ohne API-Integration)
+    if (strpos($payment_method, 'sepa') !== false || strpos($payment_method, 'lastschrift') !== false) {
+        // SEPA/Lastschrift Validierung - hier würde die echte Integration erfolgen
+        $validated = true; // Für Testzwecke
     } else {
         // Standard-Validierung für andere Zahlungsmethoden
-        $validated = true; // Für Testzwecke immer erfolgreich
+        $validated = true; // Für Testzwecke
     }
     
     if ($validated) {
@@ -1023,6 +1386,495 @@ function yprint_validate_payment() {
 }
 add_action('wp_ajax_yprint_validate_payment', 'yprint_validate_payment');
 add_action('wp_ajax_nopriv_yprint_validate_payment', 'yprint_validate_payment');
+
+/**
+ * AJAX-Handler zur Initialisierung einer PayPal-Zahlung
+ */
+function yprint_init_paypal_payment() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['checkout_data']) || empty($_POST['checkout_data'])) {
+        wp_send_json_error(array(
+            'message' => 'Keine Checkout-Daten vorhanden'
+        ));
+        return;
+    }
+    
+    $checkout_data = $_POST['checkout_data'];
+    
+    try {
+        // Temporäre Bestellung erstellen
+        $temp_order_id = yprint_create_temp_order($checkout_data);
+        
+        if (!$temp_order_id) {
+            throw new Exception('Fehler beim Erstellen der temporären Bestellung');
+        }
+        
+        // PayPal-Client initialisieren
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-paypal-payments/vendor/autoload.php';
+        
+        $client_id = get_option('yprint_paypal_client_id', 'AWKnm3nbPgIo3KXZbs-vjQPjSWOYy6LiFGQ6zn_nJ7XlW9LldJ8OjKuxbbLzK7UTE2xETV9sz43qzhpB');
+        $client_secret = get_option('yprint_paypal_secret_key', 'EDZRCOs170tjF5v2CFfw7giWsnTvjgLSbodtsgbAXee13AdigXiZPqF_0HU8BqlRnJVAigVtgKke8mY9');
+        
+        $environment = 'production'; // oder 'sandbox' für Testumgebung
+        
+        // PayPal SDK initialisieren
+        $provider = new \PayPalCheckoutSdk\Core\PayPalHttpClient(
+            $environment === 'production'
+                ? new \PayPalCheckoutSdk\Core\ProductionEnvironment($client_id, $client_secret)
+                : new \PayPalCheckoutSdk\Core\SandboxEnvironment($client_id, $client_secret)
+        );
+        
+        // WooCommerce Order abrufen
+        $order = wc_get_order($temp_order_id);
+        
+        // Order-Daten für PayPal vorbereiten
+        $request = new \PayPalCheckoutSdk\Orders\OrdersCreateRequest();
+        $request->prefer('return=representation');
+        
+        // Währung abrufen
+        $currency = get_woocommerce_currency();
+        $request->body = [
+            'intent' => 'CAPTURE',
+            'purchase_units' => [
+                [
+                    'reference_id' => $temp_order_id,
+                    'description' => 'Bestellung bei YPrint',
+                    'amount' => [
+                        'currency_code' => $currency,
+                        'value' => number_format($order->get_total(), 2, '.', ''),
+                        'breakdown' => [
+                            'item_total' => [
+                                'currency_code' => $currency,
+                                'value' => number_format($order->get_subtotal(), 2, '.', '')
+                            ],
+                            'shipping' => [
+                                'currency_code' => $currency,
+                                'value' => number_format($order->get_shipping_total(), 2, '.', '')
+                            ],
+                            'tax_total' => [
+                                'currency_code' => $currency,
+                                'value' => number_format($order->get_total_tax(), 2, '.', '')
+                            ],
+                            'discount' => [
+                                'currency_code' => $currency,
+                                'value' => number_format($order->get_discount_total(), 2, '.', '')
+                            ]
+                        ]
+                    ]
+                ]
+            ],
+            'application_context' => [
+                'brand_name' => 'YPrint',
+                'user_action' => 'PAY_NOW',
+                'return_url' => home_url('/paypal-return'),
+                'cancel_url' => home_url('/checkout')
+            ]
+        ];
+        
+        // PayPal Order erstellen
+        $response = $provider->execute($request);
+        
+        if ($response->statusCode === 201) {
+            // Order ID in Meta speichern
+            update_post_meta($temp_order_id, '_paypal_order_id', $response->result->id);
+            
+            wp_send_json_success(array(
+                'paypal_order_id' => $response->result->id,
+                'temp_order_id' => $temp_order_id
+            ));
+        } else {
+            throw new Exception('Fehler bei der Kommunikation mit PayPal');
+        }
+    } catch (Exception $e) {
+        error_log('YPrint PayPal Fehler: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der PayPal-Initialisierung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_init_paypal_payment', 'yprint_init_paypal_payment');
+add_action('wp_ajax_nopriv_yprint_init_paypal_payment', 'yprint_init_paypal_payment');
+
+/**
+ * AJAX-Handler zur Erfassung einer PayPal-Zahlung
+ */
+function yprint_capture_paypal_payment() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['paypal_order_id']) || !isset($_POST['temp_order_id'])) {
+        wp_send_json_error(array(
+            'message' => 'Fehlende Zahlungsinformationen'
+        ));
+        return;
+    }
+    
+    $paypal_order_id = sanitize_text_field($_POST['paypal_order_id']);
+    $temp_order_id = intval($_POST['temp_order_id']);
+    
+    try {
+        // PayPal-Client initialisieren
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-paypal-payments/vendor/autoload.php';
+        
+        $client_id = get_option('yprint_paypal_client_id', 'AWKnm3nbPgIo3KXZbs-vjQPjSWOYy6LiFGQ6zn_nJ7XlW9LldJ8OjKuxbbLzK7UTE2xETV9sz43qzhpB');
+        $client_secret = get_option('yprint_paypal_secret_key', 'EDZRCOs170tjF5v2CFfw7giWsnTvjgLSbodtsgbAXee13AdigXiZPqF_0HU8BqlRnJVAigVtgKke8mY9');
+        
+        $environment = 'production'; // oder 'sandbox' für Testumgebung
+        
+        // PayPal SDK initialisieren
+        $provider = new \PayPalCheckoutSdk\Core\PayPalHttpClient(
+            $environment === 'production'
+                ? new \PayPalCheckoutSdk\Core\ProductionEnvironment($client_id, $client_secret)
+                : new \PayPalCheckoutSdk\Core\SandboxEnvironment($client_id, $client_secret)
+        );
+        
+        // Zahlung erfassen
+        $request = new \PayPalCheckoutSdk\Orders\OrdersCaptureRequest($paypal_order_id);
+        $response = $provider->execute($request);
+        
+        if ($response->statusCode === 201 || $response->statusCode === 200) {
+            // Bestellstatus aktualisieren
+            $order = wc_get_order($temp_order_id);
+            
+            if ($order) {
+                // Bestellstatus auf "processing" setzen
+                $order->update_status('processing', 'Zahlung mit PayPal erfolgreich erhalten.');
+                
+                // PayPal-Transaktions-ID speichern
+                if (isset($response->result->purchase_units[0]->payments->captures[0]->id)) {
+                    $transaction_id = $response->result->purchase_units[0]->payments->captures[0]->id;
+                    $order->set_transaction_id($transaction_id);
+                    $order->add_order_note("PayPal Transaktion ID: " . $transaction_id);
+                }
+                
+                $order->save();
+                
+                // Warenkorb leeren
+                WC()->cart->empty_cart();
+                
+                wp_send_json_success(array(
+                    'message' => 'Zahlung erfolgreich erfasst',
+                    'order_id' => $temp_order_id,
+                    'redirect' => $order->get_checkout_order_received_url()
+                ));
+            } else {
+                throw new Exception('Bestellung konnte nicht gefunden werden');
+            }
+        } else {
+            throw new Exception('Fehler bei der Zahlungserfassung');
+        }
+    } catch (Exception $e) {
+        error_log('YPrint PayPal Capture Fehler: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der Zahlungserfassung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_capture_paypal_payment', 'yprint_capture_paypal_payment');
+add_action('wp_ajax_nopriv_yprint_capture_paypal_payment', 'yprint_capture_paypal_payment');
+
+/**
+ * AJAX-Handler zur Initialisierung einer Stripe-Zahlung
+ */
+function yprint_init_stripe_payment() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['checkout_data']) || empty($_POST['checkout_data'])) {
+        wp_send_json_error(array(
+            'message' => 'Keine Checkout-Daten vorhanden'
+        ));
+        return;
+    }
+    
+    $checkout_data = $_POST['checkout_data'];
+    
+    try {
+        // Temporäre Bestellung erstellen
+        $temp_order_id = yprint_create_temp_order($checkout_data);
+        
+        if (!$temp_order_id) {
+            throw new Exception('Fehler beim Erstellen der temporären Bestellung');
+        }
+        
+        // Stripe-API einbinden
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
+        
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        
+        // API-Key setzen
+        \WC_Stripe_API::set_secret_key($stripe_secret_key);
+        
+        // WooCommerce Order abrufen
+        $order = wc_get_order($temp_order_id);
+        
+        // Kundenadresse
+        $customer_info = array(
+            'address' => array(
+                'line1' => $order->get_billing_address_1(),
+                'line2' => $order->get_billing_address_2(),
+                'city' => $order->get_billing_city(),
+                'postal_code' => $order->get_billing_postcode(),
+                'country' => $order->get_billing_country()
+            ),
+            'email' => $order->get_billing_email(),
+            'name' => $order->get_formatted_billing_full_name(),
+            'phone' => $order->get_billing_phone()
+        );
+        
+        // Währung abrufen
+        $currency = strtolower(get_woocommerce_currency());
+        
+        // Betrag in Cents/Kleinsten Einheiten
+        $amount = intval($order->get_total() * 100);
+        
+        // Stripe Payment Intent erstellen
+        $payment_intent_args = array(
+            'amount' => $amount,
+            'currency' => $currency,
+            'payment_method_types' => ['card'],
+            'description' => 'Bestellung #' . $order->get_order_number() . ' auf YPrint',
+            'metadata' => array(
+                'order_id' => $temp_order_id,
+                'customer_name' => $customer_info['name'],
+                'customer_email' => $customer_info['email']
+            ),
+            'receipt_email' => $customer_info['email']
+        );
+        
+        // Stripe API aufrufen
+        $response = \WC_Stripe_API::request($payment_intent_args, 'payment_intents');
+        
+        if (!empty($response->error)) {
+            throw new Exception($response->error->message);
+        }
+        
+        if (empty($response->id) || empty($response->client_secret)) {
+            throw new Exception('Ungültige Antwort von Stripe');
+        }
+        
+        // Payment Intent ID in Order Meta speichern
+        update_post_meta($temp_order_id, '_stripe_payment_intent', $response->id);
+        
+        wp_send_json_success(array(
+            'client_secret' => $response->client_secret,
+            'payment_intent_id' => $response->id,
+            'temp_order_id' => $temp_order_id
+        ));
+    } catch (Exception $e) {
+        error_log('YPrint Stripe Fehler: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der Stripe-Initialisierung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_init_stripe_payment', 'yprint_init_stripe_payment');
+add_action('wp_ajax_nopriv_yprint_init_stripe_payment', 'yprint_init_stripe_payment');
+
+/**
+ * AJAX-Handler zur Bestätigung einer Stripe-Zahlung
+ */
+function yprint_confirm_stripe_payment() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['payment_intent']) || !isset($_POST['temp_order_id'])) {
+        wp_send_json_error(array(
+            'message' => 'Fehlende Zahlungsinformationen'
+        ));
+        return;
+    }
+    
+    $payment_intent_id = sanitize_text_field($_POST['payment_intent']);
+    $temp_order_id = intval($_POST['temp_order_id']);
+    
+    try {
+        // Stripe-API einbinden
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
+        
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        
+        // API-Key setzen
+        \WC_Stripe_API::set_secret_key($stripe_secret_key);
+        
+        // Payment Intent Status prüfen
+        $response = \WC_Stripe_API::retrieve('payment_intents/' . $payment_intent_id);
+        
+        if (!empty($response->error)) {
+            throw new Exception($response->error->message);
+        }
+        
+        // Prüfen, ob Payment Intent zum Order passt
+        $stored_payment_intent = get_post_meta($temp_order_id, '_stripe_payment_intent', true);
+        
+        if ($stored_payment_intent !== $payment_intent_id) {
+            throw new Exception('Payment Intent stimmt nicht mit Bestellung überein');
+        }
+        
+        // Prüfen, ob Zahlung erfolgreich war
+        if ($response->status !== 'succeeded') {
+            throw new Exception('Zahlung wurde nicht erfolgreich abgeschlossen');
+        }
+        
+        // Bestellstatus aktualisieren
+        $order = wc_get_order($temp_order_id);
+        
+        if ($order) {
+            // Bestellstatus auf "processing" setzen
+            $order->update_status('processing', 'Zahlung mit Stripe erfolgreich erhalten.');
+            
+            // Stripe-Transaktions-ID speichern
+            $charge_id = isset($response->charges->data[0]->id) ? $response->charges->data[0]->id : $payment_intent_id;
+            $order->set_transaction_id($charge_id);
+            $order->add_order_note("Stripe Zahlung erfolgreich (ID: " . $charge_id . ")");
+            
+            $order->save();
+            
+            // Warenkorb leeren
+            WC()->cart->empty_cart();
+            
+            wp_send_json_success(array(
+                'message' => 'Zahlung erfolgreich bestätigt',
+                'order_id' => $temp_order_id,
+                'redirect' => $order->get_checkout_order_received_url()
+            ));
+        } else {
+            throw new Exception('Bestellung konnte nicht gefunden werden');
+        }
+    } catch (Exception $e) {
+        error_log('YPrint Stripe Confirm Fehler: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der Zahlungsbestätigung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_confirm_stripe_payment', 'yprint_confirm_stripe_payment');
+add_action('wp_ajax_nopriv_yprint_confirm_stripe_payment', 'yprint_confirm_stripe_payment');
+
+/**
+ * Hilfsfunktion: Temporäre WooCommerce-Bestellung erstellen
+ */
+function yprint_create_temp_order($checkout_data) {
+    try {
+        // Neues WooCommerce Order-Objekt erstellen
+        $order = wc_create_order();
+        
+        // Benutzer zuweisen, falls angemeldet
+        $user_id = get_current_user_id();
+        if ($user_id > 0) {
+            $order->set_customer_id($user_id);
+        }
+        
+        // Warenkorb-Produkte zur Bestellung hinzufügen
+        foreach (WC()->cart->get_cart() as $cart_item_key => $cart_item) {
+            $product = $cart_item['data'];
+            $quantity = $cart_item['quantity'];
+            
+            // Produkt zur Bestellung hinzufügen
+            $order->add_product($product, $quantity);
+        }
+        
+        // Shipping-Methode hinzufügen
+        if (WC()->session && WC()->session->get('chosen_shipping_methods')) {
+            $chosen_shipping_methods = WC()->session->get('chosen_shipping_methods');
+            $shipping_rate = new WC_Shipping_Rate('flat_rate', 'Versand', WC()->cart->get_shipping_total(), array(), 'flat_rate');
+            $order->add_shipping($shipping_rate);
+        }
+        
+        // Adressen setzen
+        if (isset($checkout_data['shipping_address'])) {
+            $order->set_shipping_first_name($checkout_data['shipping_address']['first_name'] ?? '');
+            $order->set_shipping_last_name($checkout_data['shipping_address']['last_name'] ?? '');
+            $order->set_shipping_address_1($checkout_data['shipping_address']['address_1'] ?? '');
+            $order->set_shipping_address_2($checkout_data['shipping_address']['address_2'] ?? '');
+            $order->set_shipping_city($checkout_data['shipping_address']['city'] ?? '');
+            $order->set_shipping_postcode($checkout_data['shipping_address']['postcode'] ?? '');
+            $order->set_shipping_country($checkout_data['shipping_address']['country'] ?? 'DE');
+        }
+        
+        // Billing-Adresse setzen (entweder von different_billing oder von shipping kopieren)
+        if (isset($checkout_data['different_billing']) && $checkout_data['different_billing'] === true && isset($checkout_data['different_billing_address'])) {
+            $order->set_billing_first_name($checkout_data['different_billing_address']['different_billing_first_name'] ?? '');
+            $order->set_billing_last_name($checkout_data['different_billing_address']['different_billing_last_name'] ?? '');
+            $order->set_billing_address_1($checkout_data['different_billing_address']['different_billing_address_1'] ?? '');
+            $order->set_billing_address_2($checkout_data['different_billing_address']['different_billing_address_2'] ?? '');
+            $order->set_billing_city($checkout_data['different_billing_address']['different_billing_city'] ?? '');
+            $order->set_billing_postcode($checkout_data['different_billing_address']['different_billing_postcode'] ?? '');
+            $order->set_billing_country($checkout_data['different_billing_address']['different_billing_country'] ?? 'DE');
+            $order->set_billing_email($checkout_data['different_billing_address']['different_billing_email'] ?? '');
+        } else if (isset($checkout_data['shipping_address'])) {
+            $order->set_billing_first_name($checkout_data['shipping_address']['first_name'] ?? '');
+            $order->set_billing_last_name($checkout_data['shipping_address']['last_name'] ?? '');
+            $order->set_billing_address_1($checkout_data['shipping_address']['address_1'] ?? '');
+            $order->set_billing_address_2($checkout_data['shipping_address']['address_2'] ?? '');
+            $order->set_billing_city($checkout_data['shipping_address']['city'] ?? '');
+            $order->set_billing_postcode($checkout_data['shipping_address']['postcode'] ?? '');
+            $order->set_billing_country($checkout_data['shipping_address']['country'] ?? 'DE');
+            
+            // E-Mail-Adresse aus Benutzeraccount oder Session
+            if ($user_id > 0) {
+                $user = get_userdata($user_id);
+                $order->set_billing_email($user->user_email);
+            } else if (WC()->session && WC()->session->get('customer') && WC()->session->get('customer')['email']) {
+                $order->set_billing_email(WC()->session->get('customer')['email']);
+            }
+        }
+        
+        // Zahlungsmethode setzen
+        if (isset($checkout_data['payment_method'])) {
+            $order->set_payment_method($checkout_data['payment_method']);
+            $order->set_payment_method_title(yprint_get_payment_method_title($checkout_data['payment_method']));
+        }
+        
+        // Gutschein anwenden, falls vorhanden
+        if (isset($checkout_data['coupon_code']) && !empty($checkout_data['coupon_code'])) {
+            $coupon_code = sanitize_text_field($checkout_data['coupon_code']);
+            $coupon = new WC_Coupon($coupon_code);
+            
+            if ($coupon->is_valid()) {
+                $order->apply_coupon($coupon_code);
+            }
+        }
+        
+        // Bestellung speichern
+        $order->calculate_totals();
+        $order->update_status('pending', 'Bestellung über YPrint-Checkout erstellt.');
+        
+        // Bestellungs-ID zurückgeben
+        return $order->get_id();
+    } catch (Exception $e) {
+        error_log('YPrint Checkout - Fehler bei Bestellerstellung: ' . $e->getMessage());
+        return false;
+    }
+}
+
+/**
+ * Hilfsfunktion: Zahlungsmethoden-Titel abrufen
+ */
+function yprint_get_payment_method_title($payment_method) {
+    $payment_gateways = WC()->payment_gateways()->payment_gateways();
+    
+    if (isset($payment_gateways[$payment_method])) {
+        return $payment_gateways[$payment_method]->get_title();
+    }
+    
+    // Fallback-Titel
+    if (strpos($payment_method, 'paypal') !== false) {
+        return 'PayPal';
+    } elseif (strpos($payment_method, 'stripe') !== false) {
+        return 'Kreditkarte (Stripe)';
+    } elseif (strpos($payment_method, 'credit') !== false) {
+        return 'Kreditkarte';
+    } elseif (strpos($payment_method, 'bacs') !== false) {
+        return 'Überweisung';
+    } elseif (strpos($payment_method, 'sepa') !== false) {
+        return 'SEPA-Lastschrift';
+    }
+    
+    return 'Unbekannte Zahlungsmethode';
+}
 
 /**
  * AJAX-Handler für Zahlungsmethoden-Updates
@@ -3108,3 +3960,949 @@ function remove_woocommerce_order_details_table() {
     }
 }
 add_action('template_redirect', 'remove_woocommerce_order_details_table');
+
+/**
+ * PayPal Webhook-Handler
+ */
+function yprint_paypal_webhook_handler() {
+    // Webhook-Verarbeitung
+    $payload = file_get_contents('php://input');
+    $headers = getallheaders();
+    
+    // Nur an der PayPal Webhook-URL aktivieren
+    if (!isset($_GET['yprint-paypal-webhook'])) {
+        return;
+    }
+    
+    // Webhook-Signatur prüfen
+    $webhook_id = get_option('yprint_paypal_webhook_id', '');
+    $webhook_signature = isset($headers['Paypal-Transmission-Sig']) ? $headers['Paypal-Transmission-Sig'] : '';
+    
+    if (empty($webhook_id) || empty($webhook_signature)) {
+        status_header(400);
+        exit('Invalid webhook configuration');
+    }
+    
+    // JSON Payload verarbeiten
+    $event_json = json_decode($payload);
+    
+    if (!$event_json || !isset($event_json->event_type)) {
+        status_header(400);
+        exit('Invalid payload');
+    }
+    
+    // Event-Typ verarbeiten
+    switch ($event_json->event_type) {
+        case 'PAYMENT.CAPTURE.COMPLETED':
+            // Zahlung abgeschlossen
+            process_paypal_payment_completed($event_json);
+            break;
+            
+        case 'PAYMENT.CAPTURE.DENIED':
+        case 'PAYMENT.CAPTURE.REFUNDED':
+        case 'PAYMENT.CAPTURE.REVERSED':
+            // Zahlung abgelehnt/zurückerstattet/storniert
+            process_paypal_payment_failed($event_json);
+            break;
+    }
+    
+    status_header(200);
+    exit('Webhook processed');
+}
+add_action('init', 'yprint_paypal_webhook_handler');
+
+/**
+ * PayPal erfolgreiche Zahlung verarbeiten
+ */
+function process_paypal_payment_completed($event_json) {
+    if (!isset($event_json->resource->order_id)) {
+        return;
+    }
+    
+    $paypal_order_id = $event_json->resource->order_id;
+    
+    // Order ID aus PayPal-Order ID finden
+    $orders = wc_get_orders(array(
+        'meta_key' => '_paypal_order_id',
+        'meta_value' => $paypal_order_id,
+        'limit' => 1
+    ));
+    
+    if (empty($orders)) {
+        return;
+    }
+    
+    $order = $orders[0];
+    
+    // Prüfen, ob Bestellung bereits bezahlt wurde
+    if ($order->is_paid()) {
+        return;
+    }
+    
+    // Bestellung als bezahlt markieren
+    $order->payment_complete($event_json->resource->id);
+    $order->add_order_note('Zahlung via PayPal Webhook bestätigt (Transaktion ID: ' . $event_json->resource->id . ')');
+    $order->save();
+}
+
+/**
+ * PayPal fehlgeschlagene Zahlung verarbeiten
+ */
+function process_paypal_payment_failed($event_json) {
+    if (!isset($event_json->resource->order_id)) {
+        return;
+    }
+    
+    $paypal_order_id = $event_json->resource->order_id;
+    
+    // Order ID aus PayPal-Order ID finden
+    $orders = wc_get_orders(array(
+        'meta_key' => '_paypal_order_id',
+        'meta_value' => $paypal_order_id,
+        'limit' => 1
+    ));
+    
+    if (empty($orders)) {
+        return;
+    }
+    
+    $order = $orders[0];
+    
+    // Bestellung als fehlgeschlagen markieren
+    $order->update_status('failed', 'PayPal-Zahlung fehlgeschlagen: ' . $event_json->event_type);
+    $order->save();
+}
+
+/**
+ * Stripe Webhook-Handler
+ */
+function yprint_stripe_webhook_handler() {
+    // Webhook-Verarbeitung
+    $payload = file_get_contents('php://input');
+    $headers = getallheaders();
+    
+    // Nur an der Stripe Webhook-URL aktivieren
+    if (!isset($_GET['yprint-stripe-webhook'])) {
+        return;
+    }
+    
+    // Webhook-Signatur prüfen
+    $webhook_secret = get_option('yprint_stripe_webhook_secret', '');
+    $signature = isset($headers['Stripe-Signature']) ? $headers['Stripe-Signature'] : '';
+    
+    if (empty($webhook_secret) || empty($signature)) {
+        status_header(400);
+        exit('Invalid webhook configuration');
+    }
+    
+    try {
+        // Stripe-API einbinden
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-webhook-handler.php';
+        
+        // Event verifizieren
+        $event = \Stripe\Webhook::constructEvent(
+            $payload, $signature, $webhook_secret
+        );
+    } catch (\Exception $e) {
+        status_header(400);
+        exit('Webhook Error: ' . $e->getMessage());
+    }
+    
+    // Event-Typ verarbeiten
+    switch ($event->type) {
+        case 'payment_intent.succeeded':
+            // Zahlung erfolgreich
+            process_stripe_payment_succeeded($event->data->object);
+            break;
+            
+        case 'payment_intent.payment_failed':
+            // Zahlung fehlgeschlagen
+            process_stripe_payment_failed($event->data->object);
+            break;
+            
+        case 'charge.refunded':
+            // Zahlung zurückerstattet
+            process_stripe_refund($event->data->object);
+            break;
+    }
+    
+    status_header(200);
+    exit('Webhook processed');
+}
+add_action('init', 'yprint_stripe_webhook_handler');
+
+/**
+ * Stripe erfolgreiche Zahlung verarbeiten
+ */
+function process_stripe_payment_succeeded($payment_intent) {
+    if (!isset($payment_intent->id)) {
+        return;
+    }
+    
+    $payment_intent_id = $payment_intent->id;
+    
+    // Order ID aus Stripe Payment Intent ID finden
+    $orders = wc_get_orders(array(
+        'meta_key' => '_stripe_payment_intent',
+        'meta_value' => $payment_intent_id,
+        'limit' => 1
+    ));
+    
+    if (empty($orders)) {
+        return;
+    }
+    
+    $order = $orders[0];
+    
+    // Prüfen, ob Bestellung bereits bezahlt wurde
+    if ($order->is_paid()) {
+        return;
+    }
+    
+    // Bestellung als bezahlt markieren
+    $charge_id = isset($payment_intent->latest_charge) ? $payment_intent->latest_charge : $payment_intent_id;
+    $order->payment_complete($charge_id);
+    $order->add_order_note('Zahlung via Stripe Webhook bestätigt (Charge ID: ' . $charge_id . ')');
+    $order->save();
+}
+
+/**
+ * Stripe fehlgeschlagene Zahlung verarbeiten
+ */
+function process_stripe_payment_failed($payment_intent) {
+    if (!isset($payment_intent->id)) {
+        return;
+    }
+    
+    $payment_intent_id = $payment_intent->id;
+    
+    // Order ID aus Stripe Payment Intent ID finden
+    $orders = wc_get_orders(array(
+        'meta_key' => '_stripe_payment_intent',
+        'meta_value' => $payment_intent_id,
+        'limit' => 1
+    ));
+    
+    if (empty($orders)) {
+        return;
+    }
+    
+    $order = $orders[0];
+    
+    // Fehlermeldung extrahieren
+    $error_message = 'Zahlung fehlgeschlagen';
+    if (isset($payment_intent->last_payment_error->message)) {
+        $error_message = $payment_intent->last_payment_error->message;
+    }
+    
+    // Bestellung als fehlgeschlagen markieren
+    $order->update_status
+    // Bestellung als fehlgeschlagen markieren
+    $order->update_status('failed', 'Stripe-Zahlung fehlgeschlagen: ' . $error_message);
+    $order->save();
+}
+
+/**
+ * Stripe Rückerstattung verarbeiten
+ */
+function process_stripe_refund($charge) {
+    if (!isset($charge->id)) {
+        return;
+    }
+    
+    $charge_id = $charge->id;
+    
+    // Order ID aus Stripe Charge ID finden
+    $orders = wc_get_orders(array(
+        'meta_key' => '_transaction_id',
+        'meta_value' => $charge_id,
+        'limit' => 1
+    ));
+    
+    if (empty($orders)) {
+        return;
+    }
+    
+    $order = $orders[0];
+    
+    // Prüfen ob vollständige oder teilweise Rückerstattung
+    $refunded_amount = $charge->amount_refunded;
+    $total_amount = $charge->amount;
+    
+    if ($refunded_amount === $total_amount) {
+        // Vollständige Rückerstattung
+        $order->update_status('refunded', 'Stripe Zahlung vollständig zurückerstattet.');
+    } else {
+        // Teilweise Rückerstattung
+        $order->add_order_note(sprintf(
+            'Stripe Zahlung teilweise zurückerstattet: %s von %s',
+            wc_price($refunded_amount / 100),
+            wc_price($total_amount / 100)
+        ));
+    }
+    
+    $order->save();
+}
+
+/**
+ * Einstellungsseite für die Zahlungsintegration hinzufügen
+ */
+function yprint_payment_settings_menu() {
+    add_options_page(
+        'YPrint Zahlungseinstellungen',
+        'YPrint Zahlungen',
+        'manage_options',
+        'yprint-payment-settings',
+        'yprint_payment_settings_page'
+    );
+}
+add_action('admin_menu', 'yprint_payment_settings_menu');
+
+/**
+ * Zahlungseinstellungen-Seite rendern
+ */
+function yprint_payment_settings_page() {
+    // Einstellungen speichern
+    if (isset($_POST['yprint_payment_settings_nonce']) && wp_verify_nonce($_POST['yprint_payment_settings_nonce'], 'yprint_payment_settings')) {
+        // PayPal Einstellungen
+        if (isset($_POST['yprint_paypal_client_id'])) {
+            update_option('yprint_paypal_client_id', sanitize_text_field($_POST['yprint_paypal_client_id']));
+        }
+        
+        if (isset($_POST['yprint_paypal_secret_key'])) {
+            update_option('yprint_paypal_secret_key', sanitize_text_field($_POST['yprint_paypal_secret_key']));
+        }
+        
+        if (isset($_POST['yprint_paypal_webhook_id'])) {
+            update_option('yprint_paypal_webhook_id', sanitize_text_field($_POST['yprint_paypal_webhook_id']));
+        }
+        
+        // Stripe Einstellungen
+        if (isset($_POST['yprint_stripe_public_key'])) {
+            update_option('yprint_stripe_public_key', sanitize_text_field($_POST['yprint_stripe_public_key']));
+        }
+        
+        if (isset($_POST['yprint_stripe_secret_key'])) {
+            update_option('yprint_stripe_secret_key', sanitize_text_field($_POST['yprint_stripe_secret_key']));
+        }
+        
+        if (isset($_POST['yprint_stripe_webhook_secret'])) {
+            update_option('yprint_stripe_webhook_secret', sanitize_text_field($_POST['yprint_stripe_webhook_secret']));
+        }
+        
+        echo '<div class="updated"><p>Einstellungen gespeichert.</p></div>';
+    }
+    
+    // Aktuelle Werte abrufen
+    $paypal_client_id = get_option('yprint_paypal_client_id', '');
+    $paypal_secret_key = get_option('yprint_paypal_secret_key', '');
+    $paypal_webhook_id = get_option('yprint_paypal_webhook_id', '');
+    
+    $stripe_public_key = get_option('yprint_stripe_public_key', '');
+    $stripe_secret_key = get_option('yprint_stripe_secret_key', '');
+    $stripe_webhook_secret = get_option('yprint_stripe_webhook_secret', '');
+    
+    // Webhook-URLs
+    $paypal_webhook_url = add_query_arg('yprint-paypal-webhook', '1', home_url('/'));
+    $stripe_webhook_url = add_query_arg('yprint-stripe-webhook', '1', home_url('/'));
+    
+    ?>
+    <div class="wrap">
+        <h1>YPrint Zahlungseinstellungen</h1>
+        
+        <form method="post" action="">
+            <?php wp_nonce_field('yprint_payment_settings', 'yprint_payment_settings_nonce'); ?>
+            
+            <h2>PayPal Einstellungen</h2>
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><label for="yprint_paypal_client_id">Client ID</label></th>
+                    <td>
+                        <input type="text" id="yprint_paypal_client_id" name="yprint_paypal_client_id" 
+                               value="<?php echo esc_attr($paypal_client_id); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="yprint_paypal_secret_key">Secret Key</label></th>
+                    <td>
+                        <input type="password" id="yprint_paypal_secret_key" name="yprint_paypal_secret_key" 
+                               value="<?php echo esc_attr($paypal_secret_key); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="yprint_paypal_webhook_id">Webhook ID</label></th>
+                    <td>
+                        <input type="text" id="yprint_paypal_webhook_id" name="yprint_paypal_webhook_id" 
+                               value="<?php echo esc_attr($paypal_webhook_id); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Webhook URL (für PayPal)</th>
+                    <td>
+                        <code><?php echo esc_url($paypal_webhook_url); ?></code>
+                        <p class="description">Diese URL im PayPal Developer Dashboard als Webhook-URL eintragen.</p>
+                    </td>
+                </tr>
+            </table>
+            
+            <h2>Stripe Einstellungen</h2>
+            <table class="form-table">
+                <tr>
+                    <th scope="row"><label for="yprint_stripe_public_key">Public Key</label></th>
+                    <td>
+                        <input type="text" id="yprint_stripe_public_key" name="yprint_stripe_public_key" 
+                               value="<?php echo esc_attr($stripe_public_key); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="yprint_stripe_secret_key">Secret Key</label></th>
+                    <td>
+                        <input type="password" id="yprint_stripe_secret_key" name="yprint_stripe_secret_key" 
+                               value="<?php echo esc_attr($stripe_secret_key); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row"><label for="yprint_stripe_webhook_secret">Webhook Secret</label></th>
+                    <td>
+                        <input type="password" id="yprint_stripe_webhook_secret" name="yprint_stripe_webhook_secret" 
+                               value="<?php echo esc_attr($stripe_webhook_secret); ?>" class="regular-text">
+                    </td>
+                </tr>
+                <tr>
+                    <th scope="row">Webhook URL (für Stripe)</th>
+                    <td>
+                        <code><?php echo esc_url($stripe_webhook_url); ?></code>
+                        <p class="description">Diese URL im Stripe Dashboard als Webhook-URL eintragen.</p>
+                    </td>
+                </tr>
+            </table>
+            
+            <p class="submit">
+                <input type="submit" name="submit" id="submit" class="button button-primary" value="Einstellungen speichern">
+            </p>
+        </form>
+    </div>
+    <?php
+}
+
+/**
+ * Erstelle Rückgabeseiten für Zahlungsprozesse
+ */
+function yprint_payment_return_endpoints() {
+    // PayPal Rückgabeseite
+    add_rewrite_rule(
+        '^paypal-return/?$',
+        'index.php?paypal_return=1',
+        'top'
+    );
+    
+    // Stripe Rückgabeseite
+    add_rewrite_rule(
+        '^stripe-return/?$',
+        'index.php?stripe_return=1',
+        'top'
+    );
+    
+    // Query-Vars hinzufügen
+    add_filter('query_vars', function($vars) {
+        $vars[] = 'paypal_return';
+        $vars[] = 'stripe_return';
+        return $vars;
+    });
+    
+    // Template für Rückgabeseiten laden
+    add_action('template_redirect', function() {
+        global $wp_query;
+        
+        if (isset($wp_query->query_vars['paypal_return']) && $wp_query->query_vars['paypal_return']) {
+            include(dirname(__FILE__) . '/templates/paypal-return.php');
+            exit;
+        }
+        
+        if (isset($wp_query->query_vars['stripe_return']) && $wp_query->query_vars['stripe_return']) {
+            include(dirname(__FILE__) . '/templates/stripe-return.php');
+            exit;
+        }
+    });
+}
+add_action('init', 'yprint_payment_return_endpoints');
+
+/**
+ * Stelle sicher, dass die Rückgabeseiten-Templates existieren
+ */
+function yprint_create_payment_return_templates() {
+    // PayPal-Rückgabeseite
+    $paypal_template_path = dirname(__FILE__) . '/templates/paypal-return.php';
+    if (!file_exists($paypal_template_path)) {
+        // Ordner erstellen, falls nicht vorhanden
+        if (!file_exists(dirname(__FILE__) . '/templates')) {
+            mkdir(dirname(__FILE__) . '/templates', 0755, true);
+        }
+        
+        // Template-Datei erstellen
+        $paypal_template_content = '<?php
+// Verhindere direkten Zugriff
+if (!defined("ABSPATH")) exit;
+
+// Order ID aus der Session abrufen
+$order_id = WC()->session ? WC()->session->get("yprint_last_order_id") : 0;
+
+// PayPal-Order ID aus URL abrufen
+$paypal_order_id = isset($_GET["token"]) ? sanitize_text_field($_GET["token"]) : "";
+
+// Prüfen, ob Benutzer abgebrochen hat
+$canceled = isset($_GET["cancel"]) && $_GET["cancel"] === "true";
+
+get_header();
+?>
+
+<div class="yprint-payment-return-container">
+    <?php if ($canceled): ?>
+        <div class="yprint-payment-message yprint-payment-error">
+            <h2>Zahlung abgebrochen</h2>
+            <p>Die PayPal-Zahlung wurde abgebrochen. Bitte versuchen Sie es erneut oder wählen Sie eine andere Zahlungsmethode.</p>
+            <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+        </div>
+    <?php else: ?>
+        <div class="yprint-payment-message yprint-payment-success">
+            <h2>Zahlung wird verarbeitet</h2>
+            <p>Ihre PayPal-Zahlung wird verarbeitet. Bitte warten Sie einen Moment...</p>
+            <div class="yprint-loader"></div>
+        </div>
+    <?php endif; ?>
+</div>
+
+<style>
+.yprint-payment-return-container {
+    max-width: 800px;
+    margin: 50px auto;
+    padding: 30px;
+    text-align: center;
+}
+
+.yprint-payment-message {
+    padding: 30px;
+    border-radius: 8px;
+}
+
+.yprint-payment-success {
+    background-color: #f0f9ff;
+    border: 1px solid #d1e7f7;
+}
+
+.yprint-payment-error {
+    background-color: #fff2f2;
+    border: 1px solid #ffcdd2;
+}
+
+.yprint-loader {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #0079FF;
+    border-radius: 50%;
+    animation: yprint-spin 1s linear infinite;
+    margin-top: 20px;
+}
+
+@keyframes yprint-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.yprint-return-button {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #0079FF;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+}
+
+.yprint-return-button:hover {
+    background-color: #0068e1;
+    color: white;
+}
+</style>
+
+<script>
+jQuery(document).ready(function($) {
+    <?php if (!$canceled && !empty($paypal_order_id)): ?>
+    // PayPal-Zahlung bestätigen
+    $.ajax({
+        type: "POST",
+        url: "<?php echo admin_url("admin-ajax.php"); ?>",
+        data: {
+            action: "yprint_verify_paypal_return",
+            paypal_order_id: "<?php echo esc_js($paypal_order_id); ?>",
+            security: "<?php echo wp_create_nonce("yprint-checkout-nonce"); ?>"
+        },
+        success: function(response) {
+            if (response.success && response.data.redirect) {
+                window.location.href = response.data.redirect;
+            } else {
+                // Fehler anzeigen
+                $(".yprint-payment-message")
+                    .removeClass("yprint-payment-success")
+                    .addClass("yprint-payment-error")
+                    .html(`
+                        <h2>Fehler bei der Zahlung</h2>
+                        <p>${response.data.message || "Bei der Verarbeitung Ihrer Zahlung ist ein Fehler aufgetreten."}</p>
+                        <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+                    `);
+            }
+        },
+        error: function() {
+            // Allgemeiner Fehler
+            $(".yprint-payment-message")
+                .removeClass("yprint-payment-success")
+                .addClass("yprint-payment-error")
+                .html(`
+                    <h2>Fehler bei der Zahlung</h2>
+                    <p>Bei der Verarbeitung Ihrer Zahlung ist ein Fehler aufgetreten.</p>
+                    <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+                `);
+        }
+    });
+    <?php endif; ?>
+});
+</script>
+
+<?php get_footer(); ?>';
+        
+        file_put_contents($paypal_template_path, $paypal_template_content);
+    }
+    
+    // Stripe-Rückgabeseite
+    $stripe_template_path = dirname(__FILE__) . '/templates/stripe-return.php';
+    if (!file_exists($stripe_template_path)) {
+        // Template-Datei erstellen
+        $stripe_template_content = '<?php
+// Verhindere direkten Zugriff
+if (!defined("ABSPATH")) exit;
+
+// Stripe-Parameter aus URL abrufen
+$payment_intent = isset($_GET["payment_intent"]) ? sanitize_text_field($_GET["payment_intent"]) : "";
+$payment_intent_client_secret = isset($_GET["payment_intent_client_secret"]) ? sanitize_text_field($_GET["payment_intent_client_secret"]) : "";
+$redirect_status = isset($_GET["redirect_status"]) ? sanitize_text_field($_GET["redirect_status"]) : "";
+
+get_header();
+?>
+
+<div class="yprint-payment-return-container">
+    <div class="yprint-payment-message <?php echo $redirect_status === "succeeded" ? "yprint-payment-success" : "yprint-payment-error"; ?>">
+        <?php if ($redirect_status === "succeeded"): ?>
+            <h2>Zahlung erfolgreich</h2>
+            <p>Ihre Zahlung wurde erfolgreich verarbeitet. Sie werden in Kürze weitergeleitet...</p>
+            <div class="yprint-loader"></div>
+        <?php else: ?>
+            <h2>Zahlung nicht abgeschlossen</h2>
+            <p>Bei der Verarbeitung Ihrer Zahlung ist ein Fehler aufgetreten.</p>
+            <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+        <?php endif; ?>
+    </div>
+</div>
+
+<style>
+.yprint-payment-return-container {
+    max-width: 800px;
+    margin: 50px auto;
+    padding: 30px;
+    text-align: center;
+}
+
+.yprint-payment-message {
+    padding: 30px;
+    border-radius: 8px;
+}
+
+.yprint-payment-success {
+    background-color: #f0f9ff;
+    border: 1px solid #d1e7f7;
+}
+
+.yprint-payment-error {
+    background-color: #fff2f2;
+    border: 1px solid #ffcdd2;
+}
+
+.yprint-loader {
+    display: inline-block;
+    width: 40px;
+    height: 40px;
+    border: 4px solid #f3f3f3;
+    border-top: 4px solid #0079FF;
+    border-radius: 50%;
+    animation: yprint-spin 1s linear infinite;
+    margin-top: 20px;
+}
+
+@keyframes yprint-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+.yprint-return-button {
+    display: inline-block;
+    margin-top: 20px;
+    padding: 10px 20px;
+    background-color: #0079FF;
+    color: white;
+    text-decoration: none;
+    border-radius: 4px;
+}
+
+.yprint-return-button:hover {
+    background-color: #0068e1;
+    color: white;
+}
+</style>
+
+<script>
+jQuery(document).ready(function($) {
+    <?php if ($redirect_status === "succeeded" && !empty($payment_intent)): ?>
+    // Stripe-Zahlung bestätigen
+    $.ajax({
+        type: "POST",
+        url: "<?php echo admin_url("admin-ajax.php"); ?>",
+        data: {
+            action: "yprint_verify_stripe_return",
+            payment_intent: "<?php echo esc_js($payment_intent); ?>",
+            client_secret: "<?php echo esc_js($payment_intent_client_secret); ?>",
+            security: "<?php echo wp_create_nonce("yprint-checkout-nonce"); ?>"
+        },
+        success: function(response) {
+            if (response.success && response.data.redirect) {
+                window.location.href = response.data.redirect;
+            } else {
+                // Fehler anzeigen
+                $(".yprint-payment-message")
+                    .removeClass("yprint-payment-success")
+                    .addClass("yprint-payment-error")
+                    .html(`
+                        <h2>Fehler bei der Zahlung</h2>
+                        <p>${response.data.message || "Bei der Verarbeitung Ihrer Zahlung ist ein Fehler aufgetreten."}</p>
+                        <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+                    `);
+            }
+        },
+        error: function() {
+            // Allgemeiner Fehler
+            $(".yprint-payment-message")
+                .removeClass("yprint-payment-success")
+                .addClass("yprint-payment-error")
+                .html(`
+                    <h2>Fehler bei der Zahlung</h2>
+                    <p>Bei der Verarbeitung Ihrer Zahlung ist ein Fehler aufgetreten.</p>
+                    <a href="<?php echo esc_url(wc_get_checkout_url()); ?>" class="yprint-return-button">Zurück zum Checkout</a>
+                `);
+        }
+    });
+    <?php endif; ?>
+});
+</script>
+
+<?php get_footer(); ?>';
+        
+        file_put_contents($stripe_template_path, $stripe_template_content);
+    }
+}
+add_action('init', 'yprint_create_payment_return_templates');
+
+/**
+ * AJAX-Handler für die Überprüfung von PayPal-Rückgaben
+ */
+function yprint_verify_paypal_return() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['paypal_order_id']) || empty($_POST['paypal_order_id'])) {
+        wp_send_json_error(array(
+            'message' => 'PayPal Order ID fehlt'
+        ));
+        return;
+    }
+    
+    $paypal_order_id = sanitize_text_field($_POST['paypal_order_id']);
+    
+    try {
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            throw new Exception('Keine zugehörige Bestellung gefunden');
+        }
+        
+        $order = $orders[0];
+        
+        // PayPal-Client initialisieren
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-paypal-payments/vendor/autoload.php';
+        
+        $client_id = get_option('yprint_paypal_client_id', 'AWKnm3nbPgIo3KXZbs-vjQPjSWOYy6LiFGQ6zn_nJ7XlW9LldJ8OjKuxbbLzK7UTE2xETV9sz43qzhpB');
+        $client_secret = get_option('yprint_paypal_secret_key', 'EDZRCOs170tjF5v2CFfw7giWsnTvjgLSbodtsgbAXee13AdigXiZPqF_0HU8BqlRnJVAigVtgKke8mY9');
+        
+        $environment = 'production'; // oder 'sandbox' für Testumgebung
+        
+        // PayPal SDK initialisieren
+        $provider = new \PayPalCheckoutSdk\Core\PayPalHttpClient(
+            $environment === 'production'
+                ? new \PayPalCheckoutSdk\Core\ProductionEnvironment($client_id, $client_secret)
+                : new \PayPalCheckoutSdk\Core\SandboxEnvironment($client_id, $client_secret)
+        );
+        
+        // PayPal Order Status abrufen
+        $request = new \PayPalCheckoutSdk\Orders\OrdersGetRequest($paypal_order_id);
+        $response = $provider->execute($request);
+        
+        if ($response->statusCode === 200) {
+            $paypal_status = $response->result->status;
+            
+            if ($paypal_status === 'COMPLETED' || $paypal_status === 'APPROVED') {
+                // Bei APPROVED versuchen, die Zahlung zu erfassen
+                if ($paypal_status === 'APPROVED') {
+                    $capture_request = new \PayPalCheckoutSdk\Orders\OrdersCaptureRequest($paypal_order_id);
+                    $capture_response = $provider->execute($capture_request);
+                    
+                    if ($capture_response->statusCode !== 201) {
+                        throw new Exception('Fehler bei der Zahlungserfassung');
+                    }
+                    
+                    // Transaktions-ID extrahieren
+                    $transaction_id = isset($capture_response->result->purchase_units[0]->payments->captures[0]->id)
+                        ? $capture_response->result->purchase_units[0]->payments->captures[0]->id
+                        : '';
+                } else {
+                    // Bei COMPLETED die Transaktions-ID aus der Antwort extrahieren
+                    $transaction_id = isset($response->result->purchase_units[0]->payments->captures[0]->id)
+                        ? $response->result->purchase_units[0]->payments->captures[0]->id
+                        : '';
+                }
+                
+                // Bestellung aktualisieren
+                if (!$order->is_paid()) {
+                    $order->payment_complete($transaction_id);
+                    $order->add_order_note('PayPal-Zahlung abgeschlossen (Transaktion ID: ' . $transaction_id . ')');
+                    $order->save();
+                }
+                
+                // Warenkorb leeren
+                WC()->cart->empty_cart();
+                
+                wp_send_json_success(array(
+                    'redirect' => 'https://yprint.de/thank-you/' // Oder $order->get_checkout_order_received_url()
+                ));
+            } else {
+                throw new Exception('PayPal-Status ist nicht COMPLETED oder APPROVED: ' . $paypal_status);
+            }
+        } else {
+            throw new Exception('Fehler beim Abrufen des PayPal-Status');
+        }
+    } catch (Exception $e) {
+        error_log('YPrint PayPal Verify Return Error: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der Verarbeitung der PayPal-Zahlung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_verify_paypal_return', 'yprint_verify_paypal_return');
+add_action('wp_ajax_nopriv_yprint_verify_paypal_return', 'yprint_verify_paypal_return');
+
+/**
+ * AJAX-Handler für die Überprüfung von Stripe-Rückgaben
+ */
+function yprint_verify_stripe_return() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['payment_intent']) || empty($_POST['payment_intent'])) {
+        wp_send_json_error(array(
+            'message' => 'Payment Intent ID fehlt'
+        ));
+        return;
+    }
+    
+    $payment_intent_id = sanitize_text_field($_POST['payment_intent']);
+    
+    try {
+        // Stripe-API einbinden
+        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
+        
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        
+        // API-Key setzen
+        \WC_Stripe_API::set_secret_key($stripe_secret_key);
+        
+        // Payment Intent Status prüfen
+        $response = \WC_Stripe_API::retrieve('payment_intents/' . $payment_intent_id);
+        
+        if (!empty($response->error)) {
+            throw new Exception($response->error->message);
+        }
+        
+        // Order ID aus Stripe Payment Intent ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_stripe_payment_intent',
+            'meta_value' => $payment_intent_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            throw new Exception('Keine zugehörige Bestellung gefunden');
+        }
+        
+        $order = $orders[0];
+        
+        // Prüfen, ob Zahlung erfolgreich war
+        if ($response->status !== 'succeeded') {
+            throw new Exception('Zahlung wurde nicht erfolgreich abgeschlossen (Status: ' . $response->status . ')');
+        }
+        
+        // Bestellung aktualisieren
+        if (!$order->is_paid()) {
+            // Charge ID extrahieren
+            $charge_id = isset($response->charges->data[0]->id) ? $response->charges->data[0]->id : $payment_intent_id;
+            
+            $order->payment_complete($charge_id);
+            $order->add_order_note('Stripe-Zahlung abgeschlossen (Charge ID: ' . $charge_id . ')');
+            $order->save();
+        }
+        
+        // Warenkorb leeren
+        WC()->cart->empty_cart();
+        
+        wp_send_json_success(array(
+            'redirect' => 'https://yprint.de/thank-you/' // Oder $order->get_checkout_order_received_url()
+        ));
+    } catch (Exception $e) {
+        error_log('YPrint Stripe Verify Return Error: ' . $e->getMessage());
+        
+        wp_send_json_error(array(
+            'message' => 'Fehler bei der Verarbeitung der Stripe-Zahlung: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_yprint_verify_stripe_return', 'yprint_verify_stripe_return');
+add_action('wp_ajax_nopriv_yprint_verify_stripe_return', 'yprint_verify_stripe_return');
+
+/**
+ * WordPress und WooCommerce Hooks beim Aktivieren aktualisieren
+ */
+function yprint_payment_activation() {
+    // Rewrite-Regeln aktualisieren
+    flush_rewrite_rules();
+    
+    // Prüfen, ob erforderliche Plugins aktiviert sind
+    if (!is_plugin_active('woocommerce/woocommerce.php')) {
+        deactivate_plugins(plugin_basename(__FILE__));
+        wp_die('Dieses Plugin benötigt WooCommerce, um zu funktionieren. Bitte installieren und aktivieren Sie WooCommerce zuerst.');
+    }
+    
+    // Erstellen und überprüfen Sie die Webhook-Ordner und Templates
+    yprint_create_payment_return_templates();
+}
+register_activation_hook(__FILE__, 'yprint_payment_activation');
