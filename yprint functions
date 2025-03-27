@@ -615,7 +615,7 @@ function yprint_checkout_communication_shortcode() {
             }, 500);
         }
     });
-}
+},
 
     // Zahlungsvalidierung
     validatePayment: function(paymentMethod, checkoutData, callback) {
