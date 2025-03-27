@@ -1601,7 +1601,7 @@ function yprint_init_stripe_payment() {
         // Stripe-API einbinden
         require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
         
-        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'INSER KEY HERE');
         
         // API-Key setzen
         \WC_Stripe_API::set_secret_key($stripe_secret_key);
@@ -1693,7 +1693,7 @@ function yprint_confirm_stripe_payment() {
         // Stripe-API einbinden
         require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
         
-        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'INSERT KEY HERE');
         
         // API-Key setzen
         \WC_Stripe_API::set_secret_key($stripe_secret_key);
@@ -3974,22 +3974,19 @@ function yprint_paypal_webhook_handler() {
         return;
     }
     
-    // Webhook-Signatur prüfen
-    $webhook_id = get_option('yprint_paypal_webhook_id', '');
-    $webhook_signature = isset($headers['Paypal-Transmission-Sig']) ? $headers['Paypal-Transmission-Sig'] : '';
-    
-    if (empty($webhook_id) || empty($webhook_signature)) {
-        status_header(400);
-        exit('Invalid webhook configuration');
-    }
+    // Debug-Log für Webhook-Anfragen
+    error_log('PayPal Webhook received: ' . $payload);
     
     // JSON Payload verarbeiten
     $event_json = json_decode($payload);
     
     if (!$event_json || !isset($event_json->event_type)) {
+        error_log('PayPal Webhook error: Invalid payload');
         status_header(400);
         exit('Invalid payload');
     }
+    
+    error_log('PayPal Webhook event type: ' . $event_json->event_type);
     
     // Event-Typ verarbeiten
     switch ($event_json->event_type) {
@@ -4004,6 +4001,21 @@ function yprint_paypal_webhook_handler() {
             // Zahlung abgelehnt/zurückerstattet/storniert
             process_paypal_payment_failed($event_json);
             break;
+            
+        case 'CHECKOUT.ORDER.APPROVED':
+            // Bestellung genehmigt
+            process_paypal_order_approved($event_json);
+            break;
+            
+        case 'CHECKOUT.ORDER.COMPLETED':
+            // Bestellung abgeschlossen
+            process_paypal_order_completed($event_json);
+            break;
+            
+        case 'CHECKOUT.ORDER.DECLINED':
+            // Bestellung abgelehnt
+            process_paypal_order_declined($event_json);
+            break;
     }
     
     status_header(200);
@@ -4015,62 +4027,187 @@ add_action('init', 'yprint_paypal_webhook_handler');
  * PayPal erfolgreiche Zahlung verarbeiten
  */
 function process_paypal_payment_completed($event_json) {
-    if (!isset($event_json->resource->order_id)) {
-        return;
+    error_log('Processing PayPal payment completed');
+    
+    if (isset($event_json->resource->id) && isset($event_json->resource->supplementary_data->related_ids->order_id)) {
+        $transaction_id = $event_json->resource->id;
+        $paypal_order_id = $event_json->resource->supplementary_data->related_ids->order_id;
+        
+        error_log('PayPal payment completed - Transaction ID: ' . $transaction_id . ', Order ID: ' . $paypal_order_id);
+        
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            error_log('No WooCommerce order found for PayPal order ID: ' . $paypal_order_id);
+            return;
+        }
+        
+        $order = $orders[0];
+        
+        // Prüfen, ob Bestellung bereits bezahlt wurde
+        if ($order->is_paid()) {
+            error_log('Order already paid: ' . $order->get_id());
+            return;
+        }
+        
+        // Bestellung als bezahlt markieren
+        $order->payment_complete($transaction_id);
+        $order->add_order_note('Zahlung via PayPal Webhook bestätigt (Transaktion ID: ' . $transaction_id . ')');
+        $order->save();
+        
+        error_log('Order ' . $order->get_id() . ' marked as paid');
+    } else {
+        error_log('PayPal webhook missing required fields for payment completed');
     }
-    
-    $paypal_order_id = $event_json->resource->order_id;
-    
-    // Order ID aus PayPal-Order ID finden
-    $orders = wc_get_orders(array(
-        'meta_key' => '_paypal_order_id',
-        'meta_value' => $paypal_order_id,
-        'limit' => 1
-    ));
-    
-    if (empty($orders)) {
-        return;
-    }
-    
-    $order = $orders[0];
-    
-    // Prüfen, ob Bestellung bereits bezahlt wurde
-    if ($order->is_paid()) {
-        return;
-    }
-    
-    // Bestellung als bezahlt markieren
-    $order->payment_complete($event_json->resource->id);
-    $order->add_order_note('Zahlung via PayPal Webhook bestätigt (Transaktion ID: ' . $event_json->resource->id . ')');
-    $order->save();
 }
 
 /**
  * PayPal fehlgeschlagene Zahlung verarbeiten
  */
 function process_paypal_payment_failed($event_json) {
-    if (!isset($event_json->resource->order_id)) {
-        return;
+    error_log('Processing PayPal payment failed');
+    
+    if (isset($event_json->resource->supplementary_data->related_ids->order_id)) {
+        $paypal_order_id = $event_json->resource->supplementary_data->related_ids->order_id;
+        
+        error_log('PayPal payment failed - Order ID: ' . $paypal_order_id);
+        
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            error_log('No WooCommerce order found for PayPal order ID: ' . $paypal_order_id);
+            return;
+        }
+        
+        $order = $orders[0];
+        
+        // Bestellung als fehlgeschlagen markieren
+        $order->update_status('failed', 'PayPal-Zahlung fehlgeschlagen: ' . $event_json->event_type);
+        $order->save();
+        
+        error_log('Order ' . $order->get_id() . ' marked as failed');
+    } else {
+        error_log('PayPal webhook missing required fields for payment failed');
     }
+}
+
+/**
+ * PayPal Bestellung genehmigt verarbeiten
+ */
+function process_paypal_order_approved($event_json) {
+    error_log('Processing PayPal order approved');
     
-    $paypal_order_id = $event_json->resource->order_id;
-    
-    // Order ID aus PayPal-Order ID finden
-    $orders = wc_get_orders(array(
-        'meta_key' => '_paypal_order_id',
-        'meta_value' => $paypal_order_id,
-        'limit' => 1
-    ));
-    
-    if (empty($orders)) {
-        return;
+    if (isset($event_json->resource->id)) {
+        $paypal_order_id = $event_json->resource->id;
+        
+        error_log('PayPal order approved - Order ID: ' . $paypal_order_id);
+        
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            error_log('No WooCommerce order found for PayPal order ID: ' . $paypal_order_id);
+            return;
+        }
+        
+        $order = $orders[0];
+        
+        // Status auf "on-hold" setzen, da die Zahlung zwar genehmigt, aber noch nicht abgeschlossen ist
+        if ($order->get_status() === 'pending') {
+            $order->update_status('on-hold', 'PayPal-Bestellung genehmigt, warte auf Zahlungsabschluss');
+            $order->save();
+            error_log('Order ' . $order->get_id() . ' marked as on-hold');
+        }
+    } else {
+        error_log('PayPal webhook missing required fields for order approved');
     }
+}
+
+/**
+ * PayPal Bestellung abgeschlossen verarbeiten
+ */
+function process_paypal_order_completed($event_json) {
+    error_log('Processing PayPal order completed');
     
-    $order = $orders[0];
+    if (isset($event_json->resource->id)) {
+        $paypal_order_id = $event_json->resource->id;
+        
+        error_log('PayPal order completed - Order ID: ' . $paypal_order_id);
+        
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            error_log('No WooCommerce order found for PayPal order ID: ' . $paypal_order_id);
+            return;
+        }
+        
+        $order = $orders[0];
+        
+        // Prüfen, ob Bestellung bereits bezahlt wurde
+        if (!$order->is_paid()) {
+            // Bestellung als bezahlt markieren, falls noch keine Zahlung eingegangen ist
+            $order->payment_complete($paypal_order_id);
+            $order->add_order_note('Zahlung via PayPal Webhook bestätigt (Order ID: ' . $paypal_order_id . ')');
+            $order->save();
+            error_log('Order ' . $order->get_id() . ' marked as paid');
+        }
+    } else {
+        error_log('PayPal webhook missing required fields for order completed');
+    }
+}
+
+/**
+ * PayPal Bestellung abgelehnt verarbeiten
+ */
+function process_paypal_order_declined($event_json) {
+    error_log('Processing PayPal order declined');
     
-    // Bestellung als fehlgeschlagen markieren
-    $order->update_status('failed', 'PayPal-Zahlung fehlgeschlagen: ' . $event_json->event_type);
-    $order->save();
+    if (isset($event_json->resource->id)) {
+        $paypal_order_id = $event_json->resource->id;
+        
+        error_log('PayPal order declined - Order ID: ' . $paypal_order_id);
+        
+        // Order ID aus PayPal-Order ID finden
+        $orders = wc_get_orders(array(
+            'meta_key' => '_paypal_order_id',
+            'meta_value' => $paypal_order_id,
+            'limit' => 1
+        ));
+        
+        if (empty($orders)) {
+            error_log('No WooCommerce order found for PayPal order ID: ' . $paypal_order_id);
+            return;
+        }
+        
+        $order = $orders[0];
+        
+        // Bestellung als fehlgeschlagen markieren
+        $order->update_status('failed', 'PayPal-Bestellung abgelehnt');
+        $order->save();
+        
+        error_log('Order ' . $order->get_id() . ' marked as failed');
+    } else {
+        error_log('PayPal webhook missing required fields for order declined');
+    }
 }
 
 /**
@@ -4086,24 +4223,34 @@ function yprint_stripe_webhook_handler() {
         return;
     }
     
+    // Debug-Log für Webhook-Anfragen
+    error_log('Stripe Webhook received: ' . $payload);
+    
     // Webhook-Signatur prüfen
     $webhook_secret = get_option('yprint_stripe_webhook_secret', '');
     $signature = isset($headers['Stripe-Signature']) ? $headers['Stripe-Signature'] : '';
     
     if (empty($webhook_secret) || empty($signature)) {
+        error_log('Stripe Webhook error: Invalid webhook configuration - missing secret or signature');
         status_header(400);
         exit('Invalid webhook configuration');
     }
     
     try {
-        // Stripe-API einbinden
-        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-webhook-handler.php';
+        // Stripe-Bibliothek laden
+        if (!class_exists('Stripe\Stripe')) {
+            require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
+            require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/vendor/autoload.php';
+        }
         
         // Event verifizieren
         $event = \Stripe\Webhook::constructEvent(
             $payload, $signature, $webhook_secret
         );
+        
+        error_log('Stripe Webhook event verified: ' . $event->type);
     } catch (\Exception $e) {
+        error_log('Stripe Webhook error: ' . $e->getMessage());
         status_header(400);
         exit('Webhook Error: ' . $e->getMessage());
     }
@@ -4124,6 +4271,10 @@ function yprint_stripe_webhook_handler() {
             // Zahlung zurückerstattet
             process_stripe_refund($event->data->object);
             break;
+        
+        default:
+            error_log('Stripe Webhook: Unhandled event type: ' . $event->type);
+            break;
     }
     
     status_header(200);
@@ -4135,11 +4286,15 @@ add_action('init', 'yprint_stripe_webhook_handler');
  * Stripe erfolgreiche Zahlung verarbeiten
  */
 function process_stripe_payment_succeeded($payment_intent) {
+    error_log('Processing Stripe payment succeeded');
+    
     if (!isset($payment_intent->id)) {
+        error_log('Stripe payment intent ID missing');
         return;
     }
     
     $payment_intent_id = $payment_intent->id;
+    error_log('Stripe payment succeeded - Payment Intent ID: ' . $payment_intent_id);
     
     // Order ID aus Stripe Payment Intent ID finden
     $orders = wc_get_orders(array(
@@ -4149,13 +4304,33 @@ function process_stripe_payment_succeeded($payment_intent) {
     ));
     
     if (empty($orders)) {
-        return;
+        error_log('No WooCommerce order found for Stripe payment intent ID: ' . $payment_intent_id);
+        
+        // Versuche über Metadaten zu finden, wenn vorhanden
+        if (isset($payment_intent->metadata->order_id)) {
+            $order_id = $payment_intent->metadata->order_id;
+            error_log('Trying to find order by ID from metadata: ' . $order_id);
+            $order = wc_get_order($order_id);
+            
+            if ($order) {
+                $orders = array($order);
+                error_log('Order found by ID from metadata');
+            } else {
+                error_log('Order not found by ID from metadata');
+                return;
+            }
+        } else {
+            error_log('No order ID in metadata');
+            return;
+        }
     }
     
     $order = $orders[0];
+    error_log('Order found: ' . $order->get_id());
     
     // Prüfen, ob Bestellung bereits bezahlt wurde
     if ($order->is_paid()) {
+        error_log('Order already paid: ' . $order->get_id());
         return;
     }
     
@@ -4163,18 +4338,29 @@ function process_stripe_payment_succeeded($payment_intent) {
     $charge_id = isset($payment_intent->latest_charge) ? $payment_intent->latest_charge : $payment_intent_id;
     $order->payment_complete($charge_id);
     $order->add_order_note('Zahlung via Stripe Webhook bestätigt (Charge ID: ' . $charge_id . ')');
+    
+    // Speichere Payment Intent ID, falls noch nicht gespeichert
+    if (!get_post_meta($order->get_id(), '_stripe_payment_intent', true)) {
+        update_post_meta($order->get_id(), '_stripe_payment_intent', $payment_intent_id);
+    }
+    
     $order->save();
+    error_log('Order ' . $order->get_id() . ' marked as paid');
 }
 
 /**
  * Stripe fehlgeschlagene Zahlung verarbeiten
  */
 function process_stripe_payment_failed($payment_intent) {
+    error_log('Processing Stripe payment failed');
+    
     if (!isset($payment_intent->id)) {
+        error_log('Stripe payment intent ID missing');
         return;
     }
     
     $payment_intent_id = $payment_intent->id;
+    error_log('Stripe payment failed - Payment Intent ID: ' . $payment_intent_id);
     
     // Order ID aus Stripe Payment Intent ID finden
     $orders = wc_get_orders(array(
@@ -4184,33 +4370,57 @@ function process_stripe_payment_failed($payment_intent) {
     ));
     
     if (empty($orders)) {
-        return;
+        error_log('No WooCommerce order found for Stripe payment intent ID: ' . $payment_intent_id);
+        
+        // Versuche über Metadaten zu finden, wenn vorhanden
+        if (isset($payment_intent->metadata->order_id)) {
+            $order_id = $payment_intent->metadata->order_id;
+            error_log('Trying to find order by ID from metadata: ' . $order_id);
+            $order = wc_get_order($order_id);
+            
+            if ($order) {
+                $orders = array($order);
+                error_log('Order found by ID from metadata');
+            } else {
+                error_log('Order not found by ID from metadata');
+                return;
+            }
+        } else {
+            error_log('No order ID in metadata');
+            return;
+        }
     }
     
     $order = $orders[0];
     
     // Fehlermeldung extrahieren
     $error_message = 'Zahlung fehlgeschlagen';
+    
     if (isset($payment_intent->last_payment_error->message)) {
         $error_message = $payment_intent->last_payment_error->message;
     }
     
-    // Bestellung als fehlgeschlagen markieren
-    $order->update_status
+    error_log('Payment error message: ' . $error_message);
+    
     // Bestellung als fehlgeschlagen markieren
     $order->update_status('failed', 'Stripe-Zahlung fehlgeschlagen: ' . $error_message);
     $order->save();
+    error_log('Order ' . $order->get_id() . ' marked as failed');
 }
 
 /**
  * Stripe Rückerstattung verarbeiten
  */
 function process_stripe_refund($charge) {
+    error_log('Processing Stripe refund');
+    
     if (!isset($charge->id)) {
+        error_log('Stripe charge ID missing');
         return;
     }
     
     $charge_id = $charge->id;
+    error_log('Stripe refund - Charge ID: ' . $charge_id);
     
     // Order ID aus Stripe Charge ID finden
     $orders = wc_get_orders(array(
@@ -4220,24 +4430,55 @@ function process_stripe_refund($charge) {
     ));
     
     if (empty($orders)) {
-        return;
+        error_log('No WooCommerce order found for Stripe charge ID: ' . $charge_id);
+        
+        // Alternative Suche nach Payment Intent ID
+        if (isset($charge->payment_intent)) {
+            error_log('Trying to find order by payment intent: ' . $charge->payment_intent);
+            $orders = wc_get_orders(array(
+                'meta_key' => '_stripe_payment_intent',
+                'meta_value' => $charge->payment_intent,
+                'limit' => 1
+            ));
+            
+            if (empty($orders)) {
+                error_log('No order found by payment intent either');
+                return;
+            }
+        } else {
+            return;
+        }
     }
     
     $order = $orders[0];
+    error_log('Order found: ' . $order->get_id());
     
     // Prüfen ob vollständige oder teilweise Rückerstattung
     $refunded_amount = $charge->amount_refunded;
     $total_amount = $charge->amount;
     
+    error_log(sprintf('Refund amount: %s of %s', $refunded_amount, $total_amount));
+    
     if ($refunded_amount === $total_amount) {
         // Vollständige Rückerstattung
         $order->update_status('refunded', 'Stripe Zahlung vollständig zurückerstattet.');
+        error_log('Order fully refunded');
     } else {
         // Teilweise Rückerstattung
-        $order->add_order_note(sprintf(
+        $refund_note = sprintf(
             'Stripe Zahlung teilweise zurückerstattet: %s von %s',
             wc_price($refunded_amount / 100),
             wc_price($total_amount / 100)
+        );
+        $order->add_order_note($refund_note);
+        error_log('Order partially refunded: ' . $refund_note);
+        
+        // WooCommerce Refund erstellen
+        $refund_amount = wc_format_decimal($refunded_amount / 100);
+        wc_create_refund(array(
+            'order_id' => $order->get_id(),
+            'amount' => $refund_amount,
+            'reason' => 'Stripe Teilrückerstattung (Webhook)'
         ));
     }
     
@@ -4832,7 +5073,7 @@ function yprint_verify_stripe_return() {
         // Stripe-API einbinden
         require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
         
-        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'STRIPE SECRET KEY');
+        $stripe_secret_key = get_option('yprint_stripe_secret_key', 'INSERT KEY HERE');
         
         // API-Key setzen
         \WC_Stripe_API::set_secret_key($stripe_secret_key);
@@ -4906,3 +5147,4 @@ function yprint_payment_activation() {
     yprint_create_payment_return_templates();
 }
 register_activation_hook(__FILE__, 'yprint_payment_activation');
+
