@@ -536,63 +536,185 @@ function yprint_checkout_communication_shortcode() {
     // Debug-Ausgabe der Daten
     console.log('Checkout data being sent:', checkoutData);
     
-    $.ajax({
-        type: 'POST',
-        url: '<?php echo admin_url('admin-ajax.php'); ?>',
-        data: {
-            action: 'yprint_process_checkout',
-            checkout_data: checkoutData,
-            security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
-        },
-        success: function(response) {
-            console.log('AJAX response:', response);
-            
-            if (response.success) {
-                // Weiterleitung zur Checkout-Seite
-                window.location.href = response.data.redirect;
-            } else {
-                // Fehleranzeige
-                $('.yprint-validation-feedback')
-                    .empty()
-                    .addClass('error')
-                    .append($('<div class="yprint-validation-item"></div>')
-                    .text(response.data.message || 'Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.'))
-                    .show();
-                
-                $('#yprint_checkout_submit').removeClass('loading');
-                
-                $('html, body').animate({
-                    scrollTop: $('.yprint-validation-feedback').offset().top - 100
-                }, 500);
-            }
-        },
-        error: function(xhr, status, error) {
-            console.error('AJAX-Fehler:', xhr.responseText, status, error);
-            
-            // Fehlerdetails anzeigen wenn vorhanden
-            let errorMessage = 'Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.';
-            try {
-                const response = JSON.parse(xhr.responseText);
-                if (response && response.data && response.data.message) {
-                    errorMessage = response.data.message;
+    // Zahlungsmethode überprüfen für Validierung
+    const paymentMethod = checkoutData.payment_method;
+    
+    // Zahlungsprozess beginnen
+    this.validatePayment(paymentMethod, checkoutData, function(paymentValidated) {
+        if (paymentValidated) {
+            // Zahlungsverifizierung erfolgreich, Bestellung abschließen
+            $.ajax({
+                type: 'POST',
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                data: {
+                    action: 'yprint_process_checkout',
+                    checkout_data: checkoutData,
+                    payment_verified: true,
+                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                },
+                success: function(response) {
+                    console.log('AJAX response:', response);
+                    
+                    if (response.success) {
+                        // Weiterleitung zur Checkout-Seite
+                        window.location.href = response.data.redirect;
+                    } else {
+                        // Fehleranzeige
+                        $('.yprint-validation-feedback')
+                            .empty()
+                            .addClass('error')
+                            .append($('<div class="yprint-validation-item"></div>')
+                            .text(response.data.message || 'Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.'))
+                            .show();
+                        
+                        $('#yprint_checkout_submit').removeClass('loading');
+                        
+                        $('html, body').animate({
+                            scrollTop: $('.yprint-validation-feedback').offset().top - 100
+                        }, 500);
+                    }
+                },
+                error: function(xhr, status, error) {
+                    console.error('AJAX-Fehler:', xhr.responseText, status, error);
+                    
+                    // Fehlerdetails anzeigen wenn vorhanden
+                    let errorMessage = 'Ein Fehler ist aufgetreten. Bitte versuchen Sie es erneut.';
+                    try {
+                        const response = JSON.parse(xhr.responseText);
+                        if (response && response.data && response.data.message) {
+                            errorMessage = response.data.message;
+                        }
+                    } catch (e) {
+                        console.error('Fehler beim Parsen der Antwort:', e);
+                    }
+                    
+                    // Allgemeiner Fehler
+                    $('.yprint-validation-feedback')
+                        .empty()
+                        .addClass('error')
+                        .append($('<div class="yprint-validation-item"></div>')
+                        .text(errorMessage))
+                        .show();
+                    
+                    $('#yprint_checkout_submit').removeClass('loading');
                 }
-            } catch (e) {
-                console.error('Fehler beim Parsen der Antwort:', e);
-            }
-            
-            // Allgemeiner Fehler
+            });
+        } else {
+            // Zahlungsverifizierung fehlgeschlagen
             $('.yprint-validation-feedback')
                 .empty()
                 .addClass('error')
                 .append($('<div class="yprint-validation-item"></div>')
-                .text(errorMessage))
+                .text('Die Zahlung konnte nicht bestätigt werden. Bitte versuchen Sie es erneut oder wählen Sie eine andere Zahlungsmethode.'))
                 .show();
             
             $('#yprint_checkout_submit').removeClass('loading');
+            
+            $('html, body').animate({
+                scrollTop: $('.yprint-validation-feedback').offset().top - 100
+            }, 500);
         }
     });
 }
 
+    // Zahlungsvalidierung
+    validatePayment: function(paymentMethod, checkoutData, callback) {
+        const $ = jQuery;
+        
+        // Je nach Zahlungsart verschiedene Validierungen durchführen
+        if (paymentMethod.includes('paypal')) {
+            // PayPal Validierung
+            $.ajax({
+                type: 'POST',
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                data: {
+                    action: 'yprint_validate_payment',
+                    payment_method: paymentMethod,
+                    checkout_data: checkoutData,
+                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                },
+                success: function(response) {
+                    if (response.success && response.data.validated) {
+                        callback(true);
+                    } else {
+                        callback(false);
+                    }
+                },
+                error: function() {
+                    callback(false);
+                }
+            });
+        } else if (paymentMethod.includes('stripe') || paymentMethod.includes('apple_pay') || paymentMethod.includes('google_pay') || paymentMethod.includes('credit')) {
+            // Kreditkarten/Stripe/Apple Pay/Google Pay Validierung
+            $.ajax({
+                type: 'POST',
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                data: {
+                    action: 'yprint_validate_payment',
+                    payment_method: paymentMethod,
+                    checkout_data: checkoutData,
+                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                },
+                success: function(response) {
+                    if (response.success && response.data.validated) {
+                        callback(true);
+                    } else {
+                        callback(false);
+                    }
+                },
+                error: function() {
+                    callback(false);
+                }
+            });
+        } else if (paymentMethod.includes('sepa') || paymentMethod.includes('lastschrift')) {
+            // SEPA/Lastschrift Validierung
+            $.ajax({
+                type: 'POST',
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                data: {
+                    action: 'yprint_validate_payment',
+                    payment_method: paymentMethod,
+                    checkout_data: checkoutData,
+                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                },
+                success: function(response) {
+                    if (response.success && response.data.validated) {
+                        callback(true);
+                    } else {
+                        callback(false);
+                    }
+                },
+                error: function() {
+                    callback(false);
+                }
+            });
+        } else if (paymentMethod.includes('bacs') || paymentMethod.includes('bank')) {
+            // Überweisung benötigt keine Echtzeit-Validierung
+            callback(true);
+        } else {
+            // Standardvalidierung für andere Zahlungsmethoden
+            $.ajax({
+                type: 'POST',
+                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                data: {
+                    action: 'yprint_validate_payment',
+                    payment_method: paymentMethod,
+                    checkout_data: checkoutData,
+                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                },
+                success: function(response) {
+                    if (response.success && response.data.validated) {
+                        callback(true);
+                    } else {
+                        callback(false);
+                    }
+                },
+                error: function() {
+                    callback(false);
+                }
+            });
+        }
+    }
     };
 
     // System initialisieren
@@ -739,6 +861,7 @@ function yprint_process_checkout() {
     }
     
     $checkout_data = $_POST['checkout_data'];
+    $payment_verified = isset($_POST['payment_verified']) && $_POST['payment_verified'] === 'true';
     
     // Validierung der Daten
     $errors = array();
@@ -812,6 +935,14 @@ $errors[] = 'Bitte gib eine abweichende Rechnungsadresse an';
 $order_id = create_woocommerce_order($checkout_data);
 
 if ($order_id) {
+    // Zahlungsstatus speichern
+    update_post_meta($order_id, '_payment_verified', $payment_verified);
+
+    // Zahlungsart speichern
+    if (!empty($checkout_data['payment_method'])) {
+        update_post_meta($order_id, '_payment_method', sanitize_text_field($checkout_data['payment_method']));
+    }
+    
     // Zur individuellen Thank You Page weiterleiten
     $redirect_url = 'https://yprint.de/thank-you/';
     
@@ -840,6 +971,58 @@ if ($order_id) {
 
 add_action('wp_ajax_yprint_process_checkout', 'yprint_process_checkout');
 add_action('wp_ajax_nopriv_yprint_process_checkout', 'yprint_process_checkout');
+
+/**
+ * AJAX-Handler für Zahlungsvalidierung
+ */
+function yprint_validate_payment() {
+    check_ajax_referer('yprint-checkout-nonce', 'security');
+    
+    if (!isset($_POST['payment_method']) || empty($_POST['payment_method'])) {
+        wp_send_json_error(array(
+            'message' => 'Keine Zahlungsmethode angegeben'
+        ));
+        return;
+    }
+    
+    $payment_method = sanitize_text_field($_POST['payment_method']);
+    $checkout_data = isset($_POST['checkout_data']) ? $_POST['checkout_data'] : array();
+    
+    // Zahlungsabwicklung je nach Zahlungsmethode
+    if (strpos($payment_method, 'paypal') !== false) {
+        // PayPal API Validierung
+        // Hier würden Sie die eigentliche PayPal-Integration verwenden
+        $validated = true; // Für Testzwecke immer erfolgreich
+    } elseif (strpos($payment_method, 'stripe') !== false || 
+              strpos($payment_method, 'apple_pay') !== false || 
+              strpos($payment_method, 'google_pay') !== false || 
+              strpos($payment_method, 'credit') !== false) {
+        // Stripe/Kreditkarten Validierung
+        // Hier würden Sie die eigentliche Stripe-Integration verwenden
+        $validated = true; // Für Testzwecke immer erfolgreich
+    } elseif (strpos($payment_method, 'sepa') !== false || 
+              strpos($payment_method, 'lastschrift') !== false) {
+        // SEPA/Lastschrift Validierung
+        $validated = true; // Für Testzwecke immer erfolgreich
+    } else {
+        // Standard-Validierung für andere Zahlungsmethoden
+        $validated = true; // Für Testzwecke immer erfolgreich
+    }
+    
+    if ($validated) {
+        wp_send_json_success(array(
+            'validated' => true,
+            'message' => 'Zahlung erfolgreich validiert'
+        ));
+    } else {
+        wp_send_json_error(array(
+            'validated' => false,
+            'message' => 'Zahlung konnte nicht validiert werden'
+        ));
+    }
+}
+add_action('wp_ajax_yprint_validate_payment', 'yprint_validate_payment');
+add_action('wp_ajax_nopriv_yprint_validate_payment', 'yprint_validate_payment');
 
 /**
  * AJAX-Handler für Zahlungsmethoden-Updates
