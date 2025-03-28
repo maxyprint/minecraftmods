@@ -962,6 +962,7 @@ processPayPalPayment: function(checkoutData, tempOrderId, callback) {
     },
     
     // Stripe Zahlungsverarbeitung - neue Methode
+     // Stripe Zahlungsverarbeitung - neue Methode
     processStripePayment: function(checkoutData, tempOrderId, callback) {
         const $ = jQuery;
         
@@ -1121,7 +1122,7 @@ processPayPalPayment: function(checkoutData, tempOrderId, callback) {
                 });
             }
         });
-    };
+    }
 
     // System initialisieren
     jQuery(document).ready(function() {
