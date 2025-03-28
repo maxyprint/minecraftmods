@@ -1821,8 +1821,15 @@ function yprint_confirm_stripe_payment() {
         
         // Prüfen, ob Zahlung erfolgreich war
         if ($response->status !== 'succeeded') {
-            throw new Exception('Zahlung wurde nicht erfolgreich abgeschlossen');
+            throw new Exception('Zahlung wurde nicht erfolgreich abgeschlossen (Status: ' . $response->status . ')');
         }
+        
+        // Charge ID extrahieren
+        $charge_id = isset($response->charges->data[0]->id) ? $response->charges->data[0]->id : $payment_intent_id;
+        
+        // Status und Charge ID in Order Meta speichern
+        update_post_meta($temp_order_id, '_stripe_payment_status', 'COMPLETED');
+        update_post_meta($temp_order_id, '_stripe_charge_id', $charge_id);
         
         // Bestellstatus aktualisieren
         $order = wc_get_order($temp_order_id);
@@ -1832,7 +1839,6 @@ function yprint_confirm_stripe_payment() {
             $order->update_status('processing', 'Zahlung mit Stripe erfolgreich erhalten.');
             
             // Stripe-Transaktions-ID speichern
-            $charge_id = isset($response->charges->data[0]->id) ? $response->charges->data[0]->id : $payment_intent_id;
             $order->set_transaction_id($charge_id);
             $order->add_order_note("Stripe Zahlung erfolgreich (ID: " . $charge_id . ")");
             
@@ -1844,10 +1850,16 @@ function yprint_confirm_stripe_payment() {
             wp_send_json_success(array(
                 'message' => 'Zahlung erfolgreich bestätigt',
                 'order_id' => $temp_order_id,
+                'charge_id' => $charge_id,
                 'redirect' => $order->get_checkout_order_received_url()
             ));
         } else {
-            throw new Exception('Bestellung konnte nicht gefunden werden');
+            // Hier nur ein Erfolg mit Charge-ID zurückgeben, 
+            // für den Fall dass die Bestellung später finalisiert wird
+            wp_send_json_success(array(
+                'message' => 'Zahlung erfolgreich bestätigt',
+                'charge_id' => $charge_id
+            ));
         }
     } catch (Exception $e) {
         error_log('YPrint Stripe Confirm Fehler: ' . $e->getMessage());
@@ -5548,69 +5560,7 @@ function yprint_init_stripe_payment() {
     }
 }
 
-/**
- * Modifizierte Stripe Payment Bestätigung
- */
-function yprint_confirm_stripe_payment() {
-    check_ajax_referer('yprint-checkout-nonce', 'security');
-    
-    if (!isset($_POST['payment_intent']) || !isset($_POST['temp_order_id'])) {
-        wp_send_json_error(array(
-            'message' => 'Fehlende Zahlungsinformationen'
-        ));
-        return;
-    }
-    
-    $payment_intent_id = sanitize_text_field($_POST['payment_intent']);
-    $temp_order_id = intval($_POST['temp_order_id']);
-    
-    try {
-        // Stripe-API einbinden
-        require_once ABSPATH . 'wp-content/plugins/woocommerce-gateway-stripe/includes/class-wc-stripe-api.php';
-        
-        $stripe_secret_key = get_option('yprint_stripe_secret_key', '');
-        
-        // API-Key setzen
-        \WC_Stripe_API::set_secret_key($stripe_secret_key);
-        
-        // Payment Intent Status prüfen
-        $response = \WC_Stripe_API::retrieve('payment_intents/' . $payment_intent_id);
-        
-        if (!empty($response->error)) {
-            throw new Exception($response->error->message);
-        }
-        
-        // Prüfen, ob Payment Intent zum Order passt
-        $stored_payment_intent = get_post_meta($temp_order_id, '_stripe_payment_intent', true);
-        
-        if ($stored_payment_intent !== $payment_intent_id) {
-            throw new Exception('Payment Intent stimmt nicht mit Bestellung überein');
-        }
-        
-        // Prüfen, ob Zahlung erfolgreich war
-        if ($response->status !== 'succeeded') {
-            throw new Exception('Zahlung wurde nicht erfolgreich abgeschlossen (Status: ' . $response->status . ')');
-        }
-        
-        // Charge ID extrahieren
-        $charge_id = isset($response->charges->data[0]->id) ? $response->charges->data[0]->id : $payment_intent_id;
-        
-        // Status und Charge ID in Order Meta speichern
-        update_post_meta($temp_order_id, '_stripe_payment_status', 'COMPLETED');
-        update_post_meta($temp_order_id, '_stripe_charge_id', $charge_id);
-        
-        wp_send_json_success(array(
-            'message' => 'Zahlung erfolgreich bestätigt',
-            'charge_id' => $charge_id
-        ));
-    } catch (Exception $e) {
-        error_log('YPrint Stripe Confirm Fehler: ' . $e->getMessage());
-        
-        wp_send_json_error(array(
-            'message' => 'Fehler bei der Zahlungsbestätigung: ' . $e->getMessage()
-        ));
-    }
-}
+ 
 
 /**
  * AJAX-Handler für SEPA-Zahlungsverarbeitung
