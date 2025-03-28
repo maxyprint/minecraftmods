@@ -853,7 +853,7 @@ processPayPalPayment: function(checkoutData, tempOrderId, callback) {
                             type: 'POST',
                             url: '<?php echo admin_url('admin-ajax.php'); ?>',
                             data: {
-                                action: 'yprint_capture_paypal_payment',
+                                action: 'yprint_capture_checkout_paypal_payment',
                                 paypal_order_id: paypalOrderId,
                                 temp_order_id: tempOrderId,
                                 security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
@@ -5473,10 +5473,10 @@ add_action('wp_ajax_nopriv_yprint_finalize_order', 'yprint_finalize_order');
  */
  
 
-/**
- * Modifizierte PayPal Payment Capture
+ /**
+ * Modifizierte PayPal Payment Capture für Checkout
  */
-function yprint_capture_paypal_payment() {
+function yprint_capture_checkout_paypal_payment() {
     check_ajax_referer('yprint-checkout-nonce', 'security');
     
     if (!isset($_POST['paypal_order_id']) || !isset($_POST['temp_order_id'])) {
@@ -5781,6 +5781,10 @@ function yprint_process_standard_payment() {
 }
 add_action('wp_ajax_yprint_process_standard_payment', 'yprint_process_standard_payment');
 add_action('wp_ajax_nopriv_yprint_process_standard_payment', 'yprint_process_standard_payment');
+
+// AJAX-Handler für die umbenannte Funktion registrieren
+add_action('wp_ajax_yprint_capture_checkout_paypal_payment', 'yprint_capture_checkout_paypal_payment');
+add_action('wp_ajax_nopriv_yprint_capture_checkout_paypal_payment', 'yprint_capture_checkout_paypal_payment');
 
 /**
  * Modifizierte Funktion zum Erstellen einer temporären WooCommerce-Bestellung
