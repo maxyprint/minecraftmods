@@ -1103,6 +1103,61 @@ processPayPalPayment: function(checkoutData, tempOrderId, callback) {
                             clientSecret: clientSecret
                         });
                     }
+                } 
+                else {
+                    $('.yprint-validation-feedback')
+                        .empty()
+                        .addClass('error')
+                        .append($('<div class="yprint-validation-item"></div>')
+                        .text(response.data.message || 'Fehler bei der Initialisierung der Stripe-Zahlung'))
+                        .show();
+                        
+                    callback({
+                        success: false,
+                        message: response.data.message || 'Fehler bei der Initialisierung der Stripe-Zahlung'
+                    });
+                }
+            },
+            error: function() {
+                $('.yprint-validation-feedback')
+                    .empty()
+                    .addClass('error')
+                    .append($('<div class="yprint-validation-item"></div>')
+                    .text('Fehler bei der Verbindung mit dem Zahlungsserver'))
+                    .show();
+                    
+                callback({
+                    success: false,
+                    message: 'Fehler bei der Verbindung mit dem Zahlungsserver'
+                });
+            }
+                                        }
+                                    });
+                                }
+                            });
+                        });
+                        
+                        // Schließen-Button
+                        $('#yprint-stripe-modal-close').on('click', function() {
+                            $('#yprint-stripe-modal').hide();
+                            
+                            callback({
+                                success: false,
+                                message: 'Zahlungsvorgang abgebrochen'
+                            });
+                        });
+                        
+                        // Speichern für späteren Zugriff
+                        window.stripeElements = {
+                            stripe: stripe,
+                            elements: elements
+                        };
+                    } else {
+                        // Elements bereits initialisiert, aktualisieren
+                        window.stripeElements.elements.update({
+                            clientSecret: clientSecret
+                        });
+                    }
                 } else {
                     $('.yprint-validation-feedback')
                         .empty()
