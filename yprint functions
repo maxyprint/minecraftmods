@@ -740,13 +740,13 @@ function yprint_checkout_communication_shortcode() {
             // SEPA/Lastschrift Verarbeitung
             $.ajax({
                 type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                url: '<?php echo admin_url("admin-ajax.php"); ?>',
                 data: {
                     action: 'yprint_process_sepa_payment',
                     payment_method: paymentMethod,
                     checkout_data: checkoutData,
                     temp_order_id: tempOrderId,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                    security: '<?php echo wp_create_nonce("yprint-checkout-nonce"); ?>'
                 },
                 success: function(response) {
                     if (response.success) {
@@ -778,13 +778,13 @@ function yprint_checkout_communication_shortcode() {
             // Standardverarbeitung für andere Zahlungsmethoden
             $.ajax({
                 type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
+                url: '<?php echo admin_url("admin-ajax.php"); ?>',
                 data: {
                     action: 'yprint_process_standard_payment',
                     payment_method: paymentMethod,
                     checkout_data: checkoutData,
                     temp_order_id: tempOrderId,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+                    security: '<?php echo wp_create_nonce("yprint-checkout-nonce"); ?>'
                 },
                 success: function(response) {
                     if (response.success) {
@@ -808,67 +808,6 @@ function yprint_checkout_communication_shortcode() {
             });
         }
     },
-    
-    // Zahlungsverarbeitung - neue Methode
-    processPayment: function(paymentMethod, checkoutData, tempOrderId, callback) {
-        const $ = jQuery;
-        
-        // Je nach Zahlungsart verschiedene Verarbeitungen durchführen
-        if (paymentMethod.includes('paypal')) {
-            // PayPal Verarbeitung
-            this.processPayPalPayment(checkoutData, tempOrderId, callback);
-        } else if (paymentMethod.includes('stripe') || paymentMethod.includes('apple_pay') || paymentMethod.includes('google_pay') || paymentMethod.includes('credit')) {
-            // Stripe Verarbeitung
-            this.processStripePayment(checkoutData, tempOrderId, callback);
-        } else if (paymentMethod.includes('sepa') || paymentMethod.includes('lastschrift')) {
-            // SEPA/Lastschrift Verarbeitung
-            $.ajax({
-                type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
-                data: {
-                    action: 'yprint_process_sepa_payment',
-                    payment_method: paymentMethod,
-                    checkout_data: checkoutData,
-                    temp_order_id: tempOrderId,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
-                },
-                success: function(response) {
-                    if (response.success) {
-                        callback({
-                            success: true,
-                            payment_id: response.data.payment_id || 'sepa_direct'
-                        });
-                    } else {
-                        callback({
-                            success: false,
-                            message: response.data.message || 'SEPA-Zahlung konnte nicht verarbeitet werden.'
-                        });
-                    }
-                },
-                error: function() {
-                    callback({
-                        success: false,
-                        message: 'Fehler bei der SEPA-Zahlungsverarbeitung.'
-                    });
-                }
-            });
-        } else if (paymentMethod.includes('bacs') || paymentMethod.includes('bank')) {
-            // Überweisung benötigt keine direkte Verarbeitung
-            callback({
-                success: true,
-                payment_id: 'bank_transfer_' + Date.now()
-            });
-        } else {
-            // Standardverarbeitung für andere Zahlungsmethoden
-            $.ajax({
-                type: 'POST',
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
-                data: {
-                    action: 'yprint_process_standard_payment',
-                    payment_method: paymentMethod,
-                    checkout_data: checkoutData,
-                    temp_order_id: tempOrderId,
-                    security: '<?php echo wp_create_nonce('yprint-c
     
     // PayPal Zahlungsvalidierung (für alte Funktionalität, wird nicht mehr direkt genutzt)
 validatePayPalPayment: function(checkoutData, callback) {
