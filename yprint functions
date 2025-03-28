@@ -291,32 +291,32 @@ function yprint_checkout_communication_shortcode() {
         },
 
         // Initialen State aus WooCommerce laden
-        initializeState: function() {
-            const user_id = '<?php echo get_current_user_id(); ?>';
-            
-            // AJAX-Aufruf um initiale Daten zu laden
-            jQuery.ajax({
-                url: '<?php echo admin_url('admin-ajax.php'); ?>',
-                type: 'POST',
-                data: {
-                    action: 'yprint_get_checkout_state',
-                    user_id: user_id,
-                    security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
-                },
-                success: (response) => {
-                    if (response.success) {
-                        // Stellen sicher, dass different_billing immer als deaktiviert geladen wird
-                        const data = {...response.data};
-                        if (data.differentBilling) {
-                            data.differentBilling.enabled = false;
-                        }
-                        this.state = {...this.state, ...data};
-                        this.updateAllFields();
-                        this.notifyStateChange();
+    initializeState: function() {
+        const user_id = '<?php echo get_current_user_id(); ?>';
+        
+        // AJAX-Aufruf um initiale Daten zu laden
+        jQuery.ajax({
+            url: '<?php echo admin_url('admin-ajax.php'); ?>',
+            type: 'POST',
+            data: {
+                action: 'yprint_get_checkout_state',
+                user_id: user_id,
+                security: '<?php echo wp_create_nonce('yprint-checkout-nonce'); ?>'
+            },
+            success: (response) => {
+                if (response.success) {
+                    // Stellen sicher, dass different_billing immer als deaktiviert geladen wird
+                    const data = {...response.data};
+                    if (data.differentBilling) {
+                        data.differentBilling.enabled = false;
                     }
+                    this.state = {...this.state, ...data};
+                    this.updateAllFields();
+                    this.notifyStateChange();
                 }
-            });
-        },
+            }
+        });
+    },
 
         // Event Listener Setup
         setupEventListeners: function() {
@@ -1015,19 +1015,21 @@ processPayPalPayment: function(checkoutData, tempOrderId, callback) {
                         paymentElement.mount('#yprint-stripe-payment-element');
                         
                         // Stripe-Formular abschicken
-                        document.getElementById('yprint-stripe-payment-form').addEventListener('submit', function(event) {
-                            event.preventDefault();
-                            
-                            // Bestätigen-Button deaktivieren und Ladeanimation anzeigen
-                            $('#yprint-stripe-submit').prop('disabled', true).addClass('loading');
-                            
-                            stripe.confirmPayment({
-                                elements,
-                                confirmParams: {
-                                    return_url: '<?php echo home_url('/stripe-return'); ?>',
-                                },
-                                redirect: 'if_required'
-                            }).then(function(result) {
+                        const stripeForm = document.getElementById('yprint-stripe-payment-form');
+                        if (stripeForm) {
+                            stripeForm.addEventListener('submit', function(event) {
+                                event.preventDefault();
+                                
+                                // Bestätigen-Button deaktivieren und Ladeanimation anzeigen
+                                $('#yprint-stripe-submit').prop('disabled', true).addClass('loading');
+                                
+                                stripe.confirmPayment({
+                                    elements,
+                                    confirmParams: {
+                                        return_url: '<?php echo home_url('/stripe-return'); ?>',
+                                    },
+                                    redirect: 'if_required'
+                                }).then(function(result) {
                                 if (result.error) {
                                     // Fehler anzeigen
                                     $('.yprint-stripe-error-message').text(result.error.message).show();
@@ -5659,4 +5661,3 @@ function yprint_create_temp_order($checkout_data, $status = 'pending') {
         return false;
     }
 }
-
